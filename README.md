@@ -1,29 +1,26 @@
 # README #
 
-This README would normally document whatever steps are necessary to get your application up and running.
+Exploring the Mandelbrot fractal using Rust and the Vulkan API.
 
-### What is this repository for? ###
+### References ###
 
 * Quick summary
 * Version
-* [Learn Markdown](https://bitbucket.org/tutorials/markdowndemo)
+* [Mandelbrot Set](phttps://en.wikipedia.org/wiki/Mandelbrot_set)
+* [Vulkan API](https://www.vulkan.org/)
+* [Coloring ideas](https://iquilezles.org/articles/palettes/)
+* [Smooth iteration count](https://iquilezles.org/articles/msetsmooth/)
 
 ### How do I get set up? ###
 
-* Summary of set up
-* Configuration
-* Dependencies
-* Database configuration
-* How to run tests
-* Deployment instructions
+``` sh
+cargo run --release
+```
 
-### Contribution guidelines ###
-
-* Writing tests
-* Code review
-* Other guidelines
-
-### Who do I talk to? ###
-
-* Repo owner or admin
-* Other community or team contact
+### Navigation ###
+- PageUp/PageDown - cycle coloring scheme
+- Ins/Del - increase/decrease the escape radius
+- NumPlus/NumMinus - increase/decrease the maximum iteration count
+- Left click - center at pixel (if CTRL is pressed it will also zoom in)
+- Right click - zoom out
+- Mouse wheel - zoom in/out
