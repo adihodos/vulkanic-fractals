@@ -2,14 +2,14 @@ use std::{cmp::Ordering, ffi::CStr, mem::size_of};
 
 use ash::vk::{
     BlendFactor, BlendOp, BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentMapping,
-    ComponentSwizzle, CullModeFlags, DescriptorBufferInfo, DescriptorBufferInfoBuilder,
-    DescriptorImageInfo, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayoutBinding,
-    DescriptorSetLayoutCreateInfo, DescriptorType, DeviceSize, DynamicState, Extent2D, Extent3D,
-    Filter, FrontFace, GraphicsPipelineCreateInfo, Handle, ImageAspectFlags, ImageCreateFlags,
-    ImageCreateInfo, ImageLayout, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags,
+    ComponentSwizzle, CullModeFlags, DescriptorBufferInfo, DescriptorImageInfo, DescriptorSet,
+    DescriptorSetAllocateInfo, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+    DescriptorType, DeviceSize, DynamicState, Extent2D, Extent3D, Filter, FrontFace,
+    GraphicsPipelineCreateInfo, Handle, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
+    ImageLayout, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags,
     ImageViewCreateInfo, ImageViewType, MemoryPropertyFlags, Offset2D, PipelineBindPoint,
     PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayoutCreateInfo,
+    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
     PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
     PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
     PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, SampleCountFlags,
@@ -17,8 +17,8 @@ use ash::vk::{
     VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, Viewport,
     WriteDescriptorSet,
 };
-use imgui::DrawCmd;
-use imgui::{self, BackendFlags, Io, Key};
+use imgui::{self, BackendFlags, FontConfig, FontGlyphRanges, Io, Key};
+use imgui::{DrawCmd, FontSource};
 
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
@@ -39,7 +39,7 @@ use crate::{
 type UiVertex = imgui::DrawVert;
 type UiIndex = imgui::DrawIdx;
 
-/// adapted from Imgui-rs example
+/// Parts adapted from imgui-winit-support example
 
 /// winit backend platform state
 #[derive(Debug)]
@@ -372,6 +372,31 @@ impl UiBackend {
             MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
             vks.swapchain.max_frames as usize,
         );
+
+        let font_files = [
+            "data/fonts/iosevka-ss03-regular.ttf",
+            "data/fonts/iosevka-ss03-medium.ttf",
+            "data/fonts/RobotoMono-Medium.ttf",
+            "data/fonts/RobotoMono-Regular.ttf",
+        ];
+
+        if let Ok(mut font_file) = std::fs::File::open(font_files[0]) {
+            let mut ttf_bytes = Vec::<u8>::new();
+            use std::io::Read;
+
+            if let Ok(_) = font_file.read_to_end(&mut ttf_bytes) {
+                imgui.fonts().add_font(&[FontSource::TtfData {
+                    data: &ttf_bytes,
+                    size_pixels: 18f32,
+                    config: Some(FontConfig {
+                        oversample_h: 4,
+                        oversample_v: 4,
+                        rasterizer_multiply: 1.5f32,
+                        ..FontConfig::default()
+                    }),
+                }]);
+            }
+        }
 
         let baked_font_atlas_image = imgui.fonts().build_alpha8_texture();
         let font_atlas_img = UniqueImage::from_bytes(
@@ -887,8 +912,8 @@ impl UiBackend {
                                     frame_context.cmd_buff,
                                     count as u32,
                                     1,
-                                    vertex_offset + cmd_params.idx_offset as u32,
-                                    index_offset as i32 + cmd_params.vtx_offset as i32,
+                                    index_offset as u32 + cmd_params.idx_offset as u32,
+                                    vertex_offset as i32 + cmd_params.vtx_offset as i32,
                                     0,
                                 );
                             }
@@ -1023,7 +1048,7 @@ fn init_imgui() -> imgui::Context {
     io.backend_flags.insert(BackendFlags::HAS_MOUSE_CURSORS);
     io.backend_flags.insert(BackendFlags::HAS_SET_MOUSE_POS);
     imgui.set_platform_name(Some(format!(
-        "imgui-winit-support {}",
+        "FractalExplorer {}",
         env!("CARGO_PKG_VERSION")
     )));
 

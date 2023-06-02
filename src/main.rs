@@ -340,6 +340,8 @@ impl FractalSimulation {
                 self.ui.draw_frame(&self.vks, &frame_context);
 
                 self.end_rendering(&frame_context);
+
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
 
             _ => {}
