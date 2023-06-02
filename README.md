@@ -4,8 +4,6 @@ Exploring the Mandelbrot fractal using Rust and the Vulkan API.
 
 ### References ###
 
-* Quick summary
-* Version
 * [Mandelbrot Set](phttps://en.wikipedia.org/wiki/Mandelbrot_set)
 * [Vulkan API](https://www.vulkan.org/)
 * [Coloring ideas](https://iquilezles.org/articles/palettes/)

@@ -7,19 +7,21 @@ use std::{
 use ash::{
     extensions::ext::DebugUtils,
     vk::{
-        ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, Buffer, BufferCreateInfo, BufferUsageFlags, ClearColorValue, ClearValue,
-        ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo,
-        CommandBufferResetFlags, CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-        CullModeFlags, DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DescriptorBufferInfo,
-        DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet,
-        DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
+        AttachmentStoreOp, Buffer, BufferCreateInfo, BufferImageCopy, BufferUsageFlags,
+        ClearColorValue, ClearValue, ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo,
+        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferResetFlags,
+        CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
+        ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
+        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
+        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags,
+        DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
         DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
         DeviceQueueCreateInfo, DeviceSize, DynamicState, Extent2D, Fence, FenceCreateFlags,
         FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
-        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageLayout, ImageSubresourceRange,
+        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateInfo, ImageLayout,
+        ImageMemoryBarrier, ImageSubresource, ImageSubresourceLayers, ImageSubresourceRange,
         ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
         MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags,
         MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
@@ -40,6 +42,8 @@ use ash::{
     Device, Entry, Instance,
 };
 
+use ui::UiBackend;
+use vulkan_renderer::UniqueImage;
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent},
@@ -47,12 +51,17 @@ use winit::{
     window::WindowBuilder,
 };
 
+mod ui;
+mod vulkan_renderer;
+
 use enum_iterator::{next_cycle, previous_cycle};
 
+use crate::vulkan_renderer::{choose_memory_heap, compile_shader_from_file};
+
 #[derive(Copy, Clone, Debug)]
-struct WindowSystemIntegration {
-    native_disp: *mut std::os::raw::c_void,
-    native_win: std::os::raw::c_ulong,
+pub struct WindowSystemIntegration {
+    pub native_disp: *mut std::os::raw::c_void,
+    pub native_win: std::os::raw::c_ulong,
 }
 
 fn main() {
@@ -86,14 +95,6 @@ fn main() {
 
     log::info!("Main window surface size {:?}", window.inner_size());
 
-    use winit::platform::x11::WindowExtX11;
-
-    let wsi = WindowSystemIntegration {
-        native_disp: window.xlib_display().unwrap(),
-        native_win: window.xlib_window().unwrap(),
-    };
-
-    log::info!("native window handles {:?}", wsi);
     window
         .set_cursor_position(PhysicalPosition::new(
             window.inner_size().width / 2,
@@ -101,14 +102,7 @@ fn main() {
         ))
         .expect("Failed to center cursor ...");
 
-    let cursor_pos = (
-        (window.inner_size().width / 2) as f32,
-        (window.inner_size().height / 2) as f32,
-    );
-
-    log::info!("Cursor initial position {:?}", cursor_pos);
-
-    let mut fractal_sim = FractalSimulation::new(wsi, cursor_pos);
+    let mut fractal_sim = FractalSimulation::new(&window);
 
     event_loop.run(move |event, _, control_flow| {
         fractal_sim.handle_event(&window, event, control_flow);
@@ -116,6 +110,8 @@ fn main() {
 }
 
 struct FractalSimulation {
+    ui_opened: bool,
+    ui: UiBackend,
     control_down: bool,
     cursor_pos: (f32, f32),
     fractal: Fractal,
@@ -123,67 +119,136 @@ struct FractalSimulation {
 }
 
 impl FractalSimulation {
-    fn new(wsi: WindowSystemIntegration, initial_cursor_pos: (f32, f32)) -> FractalSimulation {
-        let vks = Box::pin(VulkanState::new(wsi).expect("Failed to initialize vulkan ..."));
+    fn new(window: &winit::window::Window) -> FractalSimulation {
+        let cursor_pos = (
+            (window.inner_size().width / 2) as f32,
+            (window.inner_size().height / 2) as f32,
+        );
+
+        use winit::platform::x11::WindowExtX11;
+        let wsi = WindowSystemIntegration {
+            native_disp: window.xlib_display().unwrap(),
+            native_win: window.xlib_window().unwrap(),
+        };
+
+        log::info!("Cursor initial position {:?}", cursor_pos);
+
+        let mut vks = Box::pin(VulkanState::new(wsi).expect("Failed to initialize vulkan ..."));
+        vks.begin_resource_loading();
         let fractal = Fractal::new(&vks);
+        let ui = UiBackend::new(window, &mut vks, ui::HiDpiMode::Default);
+        vks.end_resource_loading();
 
         FractalSimulation {
+            ui_opened: true,
             control_down: false,
-            cursor_pos: initial_cursor_pos,
+            cursor_pos,
             fractal,
             vks,
+            ui,
         }
     }
 
-    fn handle_event(
+    fn begin_rendering(&mut self) -> FrameRenderContext {
+        let img_size = self.vks.ds.surface.image_size;
+        let frame_context = self.vks.begin_rendering(img_size);
+
+        let render_area = Rect2D {
+            offset: Offset2D { x: 0, y: 0 },
+            extent: frame_context.fb_size,
+        };
+
+        unsafe {
+            self.vks.ds.device.cmd_begin_render_pass(
+                frame_context.cmd_buff,
+                &RenderPassBeginInfo::builder()
+                    .framebuffer(frame_context.framebuffer)
+                    .render_area(render_area)
+                    .render_pass(self.vks.renderpass)
+                    .clear_values(&[ClearValue {
+                        color: ClearColorValue {
+                            float32: [0f32, 0f32, 0f32, 1f32],
+                        },
+                    }]),
+                SubpassContents::INLINE,
+            );
+        }
+
+        frame_context
+    }
+
+    fn end_rendering(&mut self, frame_context: &FrameRenderContext) {
+        unsafe {
+            self.vks
+                .ds
+                .device
+                .cmd_end_render_pass(frame_context.cmd_buff);
+        }
+
+        self.vks.end_rendering();
+    }
+
+    fn setup_ui(&mut self, window: &winit::window::Window) {
+        let ui = self.ui.new_frame(window);
+        ui.show_demo_window(&mut self.ui_opened);
+    }
+
+    fn handle_window_event(
         &mut self,
         window: &winit::window::Window,
-        event: Event<()>,
+        event: &winit::event::WindowEvent,
         control_flow: &mut winit::event_loop::ControlFlow,
     ) {
-        control_flow.set_poll();
-
-        match event {
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                window_id,
-            } => {
-                if window.id() == window_id {
-                    control_flow.set_exit();
-                }
+        match *event {
+            WindowEvent::CloseRequested => {
+                control_flow.set_exit();
             }
 
-            Event::WindowEvent {
-                event:
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode: Some(VirtualKeyCode::Escape),
-                                state: ElementState::Pressed,
-                                ..
-                            },
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        virtual_keycode: Some(VirtualKeyCode::Escape),
+                        state: ElementState::Pressed,
                         ..
                     },
                 ..
             } => control_flow.set_exit(),
 
-            Event::WindowEvent {
-                event: WindowEvent::CursorMoved { position, .. },
-                ..
-            } => {
+            WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos.0 = position.x as f32;
                 self.cursor_pos.1 = position.y as f32;
             }
 
-            Event::WindowEvent {
-                event:
-                    WindowEvent::KeyboardInput {
-                        input:
-                            KeyboardInput {
-                                virtual_keycode,
-                                state: ElementState::Pressed,
-                                ..
-                            },
+            WindowEvent::Resized(new_size) => {
+                self.fractal
+                    .params
+                    .screen_resized(new_size.width, new_size.height);
+            }
+
+            WindowEvent::ModifiersChanged(mods) => {
+                self.control_down = mods.ctrl();
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let zoom_in = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(.., y) => y > 0f32,
+                    winit::event::MouseScrollDelta::PixelDelta(PhysicalPosition { y, .. }) => {
+                        y > 0f64
+                    }
+                };
+
+                if !zoom_in {
+                    self.fractal.params.zoom_out();
+                } else {
+                    self.fractal.params.zoom_in();
+                }
+            }
+
+            WindowEvent::KeyboardInput {
+                input:
+                    KeyboardInput {
+                        virtual_keycode,
+                        state: ElementState::Pressed,
                         ..
                     },
                 ..
@@ -225,49 +290,9 @@ impl FractalSimulation {
                 _ => {}
             },
 
-            Event::WindowEvent {
-                event: WindowEvent::Resized(new_size),
-                ..
-            } => {
-                self.fractal
-                    .params
-                    .screen_resized(new_size.width, new_size.height);
-            }
-
-            Event::WindowEvent {
-                event: WindowEvent::ModifiersChanged(mods),
-                ..
-            } => {
-                self.control_down = mods.ctrl();
-            }
-
-            Event::WindowEvent {
-                event: WindowEvent::MouseWheel { delta, .. },
-                ..
-            } => {
-                let zoom_in = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(.., y) => y > 0f32,
-                    winit::event::MouseScrollDelta::PixelDelta(PhysicalPosition { y, .. }) => {
-                        y > 0f64
-                    }
-                };
-
-                if !zoom_in {
-                    //
-                    // zoom-out
-                    self.fractal.params.zoom_out();
-                } else {
-                    self.fractal.params.zoom_in();
-                }
-            }
-
-            Event::WindowEvent {
-                event:
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        button,
-                        ..
-                    },
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
                 ..
             } => match button {
                 MouseButton::Left => {
@@ -283,15 +308,41 @@ impl FractalSimulation {
                 _ => {}
             },
 
+            _ => {}
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        window: &winit::window::Window,
+        event: Event<()>,
+        control_flow: &mut winit::event_loop::ControlFlow,
+    ) {
+        control_flow.set_poll();
+
+        match event {
+            Event::WindowEvent {
+                event: ref win_event,
+                ..
+            } => {
+                let wants_input = self.ui.handle_event(window, &event);
+                if !wants_input {
+                    self.handle_window_event(window, win_event, control_flow);
+                }
+            }
+
             Event::MainEventsCleared => {
-                let img_size = self.vks.ds.surface.image_size;
-                let frame_context = self.vks.begin_rendering(img_size);
+                let frame_context = self.begin_rendering();
 
                 self.fractal.render(&self.vks, &frame_context);
 
-                self.vks.end_rendering();
+                self.setup_ui(window);
+                self.ui.draw_frame(&self.vks, &frame_context);
+
+                self.end_rendering(&frame_context);
             }
-            _ => (),
+
+            _ => {}
         }
     }
 }
@@ -302,18 +353,48 @@ impl std::ops::Drop for FractalSimulation {
     }
 }
 
-struct VulkanState {
-    renderpass: RenderPass,
-    swapchain: VulkanSwapchainState,
-    ds: VulkanDeviceState,
-    msgr: DebugUtilsMessengerEXT,
-    dbg: DebugUtils,
-    instance: Instance,
-    entry: Entry,
+struct ResourceLoadingState {
+    cmd_buf: CommandBuffer,
+    fence: Fence,
+    work_buffers: Vec<UniqueBuffer>,
+}
+
+impl ResourceLoadingState {
+    fn new(ds: &VulkanDeviceState) -> ResourceLoadingState {
+        let cmd_buf = unsafe {
+            ds.device.allocate_command_buffers(
+                &CommandBufferAllocateInfo::builder()
+                    .command_buffer_count(1)
+                    .command_pool(ds.cmd_pool)
+                    .level(CommandBufferLevel::PRIMARY),
+            )
+        }
+        .expect("Failed to allocate command buffer")[0];
+
+        let fence = unsafe { ds.device.create_fence(&FenceCreateInfo::builder(), None) }
+            .expect("Failed to create fence");
+
+        ResourceLoadingState {
+            cmd_buf,
+            fence,
+            work_buffers: vec![],
+        }
+    }
+}
+
+pub struct VulkanState {
+    resource_loader: ResourceLoadingState,
+    pub renderpass: RenderPass,
+    pub swapchain: VulkanSwapchainState,
+    pub ds: VulkanDeviceState,
+    pub msgr: DebugUtilsMessengerEXT,
+    pub dbg: DebugUtils,
+    pub instance: Instance,
+    pub entry: Entry,
 }
 
 impl VulkanState {
-    fn wait_all_idle(&mut self) {
+    pub fn wait_all_idle(&mut self) {
         unsafe {
             self.ds
                 .device
@@ -325,66 +406,194 @@ impl VulkanState {
                 .expect("Failed to wait for device idle");
         }
     }
+
+    pub fn begin_resource_loading(&self) {
+        unsafe {
+            self.ds.device.begin_command_buffer(
+                self.resource_loader.cmd_buf,
+                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+        }
+        .expect("Failed to begin command buffer for resource loading");
+    }
+
+    pub fn end_resource_loading(&mut self) {
+        unsafe {
+            self.ds
+                .device
+                .end_command_buffer(self.resource_loader.cmd_buf)
+                .expect("Failed to end command buffer");
+            self.ds
+                .device
+                .queue_submit(
+                    self.ds.queue,
+                    &[*SubmitInfo::builder().command_buffers(&[self.resource_loader.cmd_buf])],
+                    self.resource_loader.fence,
+                )
+                .expect("Failed to submit command buffer");
+            self.ds
+                .device
+                .wait_for_fences(&[self.resource_loader.fence], true, u64::MAX)
+                .expect("Failed to wait for fences ...");
+        }
+
+        self.resource_loader.work_buffers.clear();
+    }
+
+    pub fn copy_pixels_to_image(
+        &mut self,
+        img: &UniqueImage,
+        pixels: &[u8],
+        image_info: &ImageCreateInfo,
+    ) {
+        let work_buffer = UniqueBuffer::new::<u8>(
+            self,
+            BufferUsageFlags::STORAGE_BUFFER | BufferUsageFlags::TRANSFER_SRC,
+            MemoryPropertyFlags::HOST_VISIBLE,
+            pixels.len(),
+        );
+
+        {
+            let mapped_buffer = UniqueBufferMapping::new(&work_buffer, &self.ds, None, None);
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    pixels.as_ptr(),
+                    mapped_buffer.mapped_memory as *mut u8,
+                    pixels.len(),
+                );
+            }
+        }
+
+        let img_subresource_range = *ImageSubresourceRange::builder()
+            .aspect_mask(ImageAspectFlags::COLOR)
+            .layer_count(image_info.array_layers)
+            .base_array_layer(0)
+            .level_count(image_info.mip_levels)
+            .base_mip_level(0);
+
+        //
+        // transition image layout from undefined -> transfer src
+        unsafe {
+            self.ds.device.cmd_pipeline_barrier(
+                self.resource_loader.cmd_buf,
+                PipelineStageFlags::TOP_OF_PIPE,
+                PipelineStageFlags::TRANSFER,
+                DependencyFlags::empty(),
+                &[],
+                &[],
+                &[*ImageMemoryBarrier::builder()
+                    .src_access_mask(AccessFlags::NONE)
+                    .dst_access_mask(AccessFlags::TRANSFER_WRITE)
+                    .image(img.image)
+                    .old_layout(ImageLayout::UNDEFINED)
+                    .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .subresource_range(img_subresource_range)],
+            );
+        }
+
+        //
+        // copy pixels
+        unsafe {
+            self.ds.device.cmd_copy_buffer_to_image(
+                self.resource_loader.cmd_buf,
+                work_buffer.handle,
+                img.image,
+                ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[*BufferImageCopy::builder()
+                    .buffer_offset(0)
+                    .image_subresource(
+                        *ImageSubresourceLayers::builder()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_array_layer(0)
+                            .layer_count(image_info.array_layers)
+                            .mip_level(0),
+                    )
+                    .image_extent(image_info.extent)],
+            );
+        }
+
+        //
+        // transition layout from transfer -> shader readonly optimal
+        unsafe {
+            self.ds.device.cmd_pipeline_barrier(
+                self.resource_loader.cmd_buf,
+                PipelineStageFlags::TRANSFER,
+                PipelineStageFlags::FRAGMENT_SHADER,
+                DependencyFlags::empty(),
+                &[],
+                &[],
+                &[*ImageMemoryBarrier::builder()
+                    .src_access_mask(AccessFlags::MEMORY_READ)
+                    .dst_access_mask(AccessFlags::MEMORY_WRITE)
+                    .image(img.image)
+                    .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .subresource_range(img_subresource_range)],
+            );
+        }
+
+        self.resource_loader.work_buffers.push(work_buffer);
+    }
 }
 
 impl std::ops::Drop for VulkanState {
     fn drop(&mut self) {}
 }
 
-struct VulkanPhysicalDeviceState {
-    device: PhysicalDevice,
-    properties: PhysicalDeviceProperties,
-    memory_properties: PhysicalDeviceMemoryProperties,
-    features: PhysicalDeviceFeatures,
-    queue_family_id: u32,
+pub struct VulkanPhysicalDeviceState {
+    pub device: PhysicalDevice,
+    pub properties: PhysicalDeviceProperties,
+    pub memory_properties: PhysicalDeviceMemoryProperties,
+    pub features: PhysicalDeviceFeatures,
+    pub queue_family_id: u32,
 }
 
-struct VulkanDeviceState {
-    descriptor_pool: DescriptorPool,
-    cmd_pool: CommandPool,
-    queue: Queue,
-    device: ash::Device,
-    surface: VulkanSurfaceState,
-    physical: VulkanPhysicalDeviceState,
+pub struct VulkanDeviceState {
+    pub descriptor_pool: DescriptorPool,
+    pub cmd_pool: CommandPool,
+    pub queue: Queue,
+    pub device: ash::Device,
+    pub surface: VulkanSurfaceState,
+    pub physical: VulkanPhysicalDeviceState,
 }
 
-struct VulkanSurfaceKHRState {
-    ext: ash::extensions::khr::Surface,
-    surface: SurfaceKHR,
+pub struct VulkanSurfaceKHRState {
+    pub ext: ash::extensions::khr::Surface,
+    pub surface: SurfaceKHR,
 }
 
-struct VulkanSurfaceState {
-    khr: VulkanSurfaceKHRState,
-    fmt: SurfaceFormatKHR,
-    present_mode: PresentModeKHR,
-    transform: SurfaceTransformFlagsKHR,
-    image_count: u32,
-    image_size: Extent2D,
+pub struct VulkanSurfaceState {
+    pub khr: VulkanSurfaceKHRState,
+    pub fmt: SurfaceFormatKHR,
+    pub present_mode: PresentModeKHR,
+    pub transform: SurfaceTransformFlagsKHR,
+    pub image_count: u32,
+    pub image_size: Extent2D,
 }
 
-struct PresentState {
-    cmd_buf: CommandBuffer,
-    fence: Fence,
-    sem_img_avail: Semaphore,
-    sem_img_finished: Semaphore,
-}
+// struct PresentState {
+//     cmd_buf: CommandBuffer,
+//     fence: Fence,
+//     sem_img_avail: Semaphore,
+//     sem_img_finished: Semaphore,
+// }
 
-struct VulkanSwapchainState {
-    ext: ash::extensions::khr::Swapchain,
-    swapchain: ash::vk::SwapchainKHR,
-    images: Vec<Image>,
-    image_views: Vec<ImageView>,
-    framebuffers: Vec<Framebuffer>,
-    work_fences: Vec<Fence>,
-    sem_work_done: Vec<Semaphore>,
-    sem_img_available: Vec<Semaphore>,
-    cmd_buffers: Vec<CommandBuffer>,
-    image_index: u32,
-    max_frames: u32,
+pub struct VulkanSwapchainState {
+    pub ext: ash::extensions::khr::Swapchain,
+    pub swapchain: ash::vk::SwapchainKHR,
+    pub images: Vec<Image>,
+    pub image_views: Vec<ImageView>,
+    pub framebuffers: Vec<Framebuffer>,
+    pub work_fences: Vec<Fence>,
+    pub sem_work_done: Vec<Semaphore>,
+    pub sem_img_available: Vec<Semaphore>,
+    pub cmd_buffers: Vec<CommandBuffer>,
+    pub image_index: u32,
+    pub max_frames: u32,
 }
 
 impl VulkanSwapchainState {
-    fn create_swapchain(
+    pub fn create_swapchain(
         ext: &ash::extensions::khr::Swapchain,
         surface: &VulkanSurfaceState,
         device: &Device,
@@ -539,7 +748,7 @@ impl VulkanSwapchainState {
         })
     }
 
-    fn handle_suboptimal(&mut self, ds: &VulkanDeviceState, renderpass: RenderPass) {
+    pub fn handle_suboptimal(&mut self, ds: &VulkanDeviceState, renderpass: RenderPass) {
         unsafe {
             ds.device
                 .queue_wait_idle(ds.queue)
@@ -857,7 +1066,7 @@ impl VulkanState {
         })
     }
 
-    fn new(wsi: WindowSystemIntegration) -> Option<VulkanState> {
+    pub fn new(wsi: WindowSystemIntegration) -> Option<VulkanState> {
         let entry = Entry::linked();
         let instance_ver = entry
             .try_enumerate_instance_version()
@@ -945,6 +1154,8 @@ impl VulkanState {
         let swapchain_state =
             VulkanSwapchainState::new(&instance, &device_state, renderpass).unwrap();
 
+        let resource_loader = ResourceLoadingState::new(&device_state);
+
         Some(VulkanState {
             dbg,
             msgr,
@@ -953,6 +1164,7 @@ impl VulkanState {
             ds: device_state,
             swapchain: swapchain_state,
             renderpass,
+            resource_loader,
         })
     }
 
@@ -987,7 +1199,7 @@ impl VulkanState {
         .expect("Failed to create renderpass")
     }
 
-    fn begin_rendering(&mut self, fb_size: Extent2D) -> FrameRenderContext {
+    pub fn begin_rendering(&mut self, fb_size: Extent2D) -> FrameRenderContext {
         //
         // wait for previous submittted work
         unsafe {
@@ -1055,7 +1267,7 @@ impl VulkanState {
         }
     }
 
-    fn end_rendering(&mut self) {
+    pub fn end_rendering(&mut self) {
         //
         // end command buffer + renderpass
         unsafe {
@@ -1119,7 +1331,7 @@ impl VulkanState {
         }
     }
 
-    fn handle_surface_size_changed(&mut self) {
+    pub fn handle_surface_size_changed(&mut self) {
         let surface_caps = unsafe {
             self.ds
                 .surface
@@ -1139,67 +1351,11 @@ impl VulkanState {
     }
 }
 
-fn compile_shader_from_file<P: AsRef<std::path::Path>>(
-    p: P,
-    vk_dev: &ash::Device,
-) -> Option<ShaderModule> {
-    use shaderc::*;
-
-    let mut compile_options = CompileOptions::new().unwrap();
-    compile_options.set_source_language(SourceLanguage::GLSL);
-    compile_options.set_target_env(TargetEnv::Vulkan, EnvVersion::Vulkan1_2 as u32);
-    compile_options.set_generate_debug_info();
-    compile_options.set_warnings_as_errors();
-
-    let shader_type = p
-        .as_ref()
-        .extension()
-        .map(|ext| ext.to_str())
-        .flatten()
-        .map(|ext| match ext {
-            "vert" => ShaderKind::Vertex,
-            "frag" => ShaderKind::Fragment,
-            "geom" => ShaderKind::Geometry,
-            _ => todo!("Shader type not handled"),
-        })
-        .unwrap();
-
-    let src_code = std::fs::read_to_string(&p).expect("Failed to read shader file {}");
-
-    let compiler = Compiler::new().unwrap();
-    let compile_result = compiler.compile_into_spirv(
-        &src_code,
-        shader_type,
-        p.as_ref().as_os_str().to_str().unwrap(),
-        "main",
-        Some(&compile_options),
-    );
-
-    compile_result
-        .map(|compiled_code| {
-            unsafe {
-                vk_dev.create_shader_module(
-                    &ShaderModuleCreateInfo::builder().code(compiled_code.as_binary()),
-                    None,
-                )
-            }
-            .expect("Failed to create shader module from bytecode ...")
-        })
-        .map_err(|e| {
-            log::error!(
-                "Failed to compile shader {}, error:\n{}",
-                p.as_ref().as_os_str().to_str().unwrap(),
-                e.to_string()
-            );
-        })
-        .ok()
-}
-
-struct FrameRenderContext {
-    cmd_buff: CommandBuffer,
-    framebuffer: Framebuffer,
-    fb_size: Extent2D,
-    current_frame_id: u32,
+pub struct FrameRenderContext {
+    pub cmd_buff: CommandBuffer,
+    pub framebuffer: Framebuffer,
+    pub fb_size: Extent2D,
+    pub current_frame_id: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
@@ -1414,19 +1570,19 @@ impl Fractal {
         .write_data(&[self.params]);
 
         unsafe {
-            vks.ds.device.cmd_begin_render_pass(
-                context.cmd_buff,
-                &RenderPassBeginInfo::builder()
-                    .framebuffer(context.framebuffer)
-                    .render_area(render_area)
-                    .render_pass(vks.renderpass)
-                    .clear_values(&[ClearValue {
-                        color: ClearColorValue {
-                            float32: [0f32, 0f32, 0f32, 1f32],
-                        },
-                    }]),
-                SubpassContents::INLINE,
-            );
+            // vks.ds.device.cmd_begin_render_pass(
+            //     context.cmd_buff,
+            //     &RenderPassBeginInfo::builder()
+            //         .framebuffer(context.framebuffer)
+            //         .render_area(render_area)
+            //         .render_pass(vks.renderpass)
+            //         .clear_values(&[ClearValue {
+            //             color: ClearColorValue {
+            //                 float32: [0f32, 0f32, 0f32, 1f32],
+            //             },
+            //         }]),
+            //     SubpassContents::INLINE,
+            // );
 
             vks.ds.device.cmd_set_viewport(
                 context.cmd_buff,
@@ -1468,8 +1624,6 @@ impl Fractal {
             );
 
             vks.ds.device.cmd_draw(context.cmd_buff, 6, 1, 0, 0);
-
-            vks.ds.device.cmd_end_render_pass(context.cmd_buff);
         }
     }
 
@@ -1510,11 +1664,11 @@ impl Fractal {
                 &[*GraphicsPipelineCreateInfo::builder()
                     .stages(&[
                         *PipelineShaderStageCreateInfo::builder()
-                            .module(vsm)
+                            .module(*vsm)
                             .stage(ShaderStageFlags::VERTEX)
                             .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
                         *PipelineShaderStageCreateInfo::builder()
-                            .module(fsm)
+                            .module(*fsm)
                             .stage(ShaderStageFlags::FRAGMENT)
                             .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
                     ])
@@ -1589,33 +1743,8 @@ impl Fractal {
         }
         .expect("Failed to create graphics pipeline ... ");
 
-        unsafe {
-            ds.device.destroy_shader_module(vsm, None);
-            ds.device.destroy_shader_module(fsm, None);
-        }
-
         (pipeline[0], pipeline_layout, descriptor_set_layout)
     }
-}
-
-fn choose_memory_heap(
-    memory_req: &MemoryRequirements,
-    required_flags: MemoryPropertyFlags,
-    ds: &VulkanDeviceState,
-) -> u32 {
-    for memory_type in 0..32 {
-        if (memory_req.memory_type_bits & (1u32 << memory_type)) != 0 {
-            if ds.physical.memory_properties.memory_types[memory_type]
-                .property_flags
-                .contains(required_flags)
-            {
-                return memory_type as u32;
-            }
-        }
-    }
-
-    log::error!("Device does not support memory {:?}", required_flags);
-    panic!("Ay blyat");
 }
 
 struct UniqueBuffer {
@@ -1776,6 +1905,16 @@ impl<'a> UniqueBufferMapping<'a> {
     fn write_data<T: Sized + Copy>(&mut self, data: &[T]) {
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), self.mapped_memory as *mut T, data.len());
+        }
+    }
+
+    fn write_data_with_offset<T: Sized + Copy>(&mut self, data: &[T], offset: isize) {
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                (self.mapped_memory as *mut T).offset(offset),
+                data.len(),
+            );
         }
     }
 }
