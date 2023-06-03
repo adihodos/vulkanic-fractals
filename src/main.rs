@@ -190,7 +190,101 @@ impl FractalSimulation {
 
     fn setup_ui(&mut self, window: &winit::window::Window) {
         let ui = self.ui.new_frame(window);
-        ui.show_demo_window(&mut self.ui_opened);
+
+        ui.window("Fractal Explorer")
+            .size([400f32, 600f32], imgui::Condition::FirstUseEver)
+            .build(|| {
+                if ui.button("Reset parameters") {
+                    self.fractal.params = FractalParameters {
+                        screen_height: self.fractal.params.screen_height,
+                        screen_width: self.fractal.params.screen_width,
+                        ..FractalParameters::default()
+                    };
+                }
+                //
+                // coloring algorithm
+                if let Some(_cb) = ui.begin_combo(
+                    "Coloring algorithm",
+                    format!("{:?}", self.fractal.params.coloring),
+                ) {
+                    let mut selected = self.fractal.params.coloring;
+                    for item in enum_iterator::all::<Coloring>() {
+                        if selected == item {
+                            ui.set_item_default_focus();
+                        }
+
+                        let clicked = ui
+                            .selectable_config(format!("{:?}", item))
+                            .selected(selected == item)
+                            .build();
+
+                        // When item is clicked, store it
+                        if clicked {
+                            selected = item;
+                            self.fractal.params.coloring = item;
+                        }
+                    }
+                }
+
+                let mut escape_radius = self.fractal.params.escape_radius;
+                ui.slider_config(
+                    "Escape radius",
+                    FractalParameters::ESC_RADIUS_MIN,
+                    FractalParameters::ESC_RADIUS_MAX,
+                )
+                .build(&mut escape_radius);
+                self.fractal.params.escape_radius = escape_radius;
+
+                let mut iterations = self.fractal.params.iterations;
+
+                ui.slider_config(
+                    "Max iterations",
+                    FractalParameters::MIN_TERATIONS,
+                    FractalParameters::MAX_ITERATIONS,
+                )
+                .build(&mut iterations);
+
+                self.fractal.params.iterations = iterations;
+
+                ui.separator();
+                ui.label_text("", "Info");
+
+                ui.text_colored(
+                    [1f32, 0f32, 0f32, 1f32],
+                    format!(
+                        "Screen {}x{}",
+                        self.fractal.params.screen_width, self.fractal.params.screen_height
+                    ),
+                );
+
+                let cursor_pos = ui.io().mouse_pos;
+                ui.text_colored(
+                    [1f32, 0f32, 0f32, 1f32],
+                    format!("Cursor position ({}, {})", cursor_pos[0], cursor_pos[1]),
+                );
+
+                ui.text_colored(
+                    [1f32, 0f32, 0f32, 1f32],
+                    format!(
+                        "Center: ({}, {})",
+                        self.fractal.params.ox, self.fractal.params.oy
+                    ),
+                );
+                ui.text_colored(
+                    [1f32, 0f32, 0f32, 1f32],
+                    format!(
+                        "Domain: ({}, {}) x ({}, {})",
+                        self.fractal.params.fxmin,
+                        self.fractal.params.fymin,
+                        self.fractal.params.fxmax,
+                        self.fractal.params.fymax
+                    ),
+                );
+                ui.text_colored(
+                    [1f32, 0f32, 0f32, 1f32],
+                    format!("Zoom: {}", 1f32 / self.fractal.params.zoom),
+                );
+            });
     }
 
     fn handle_window_event(

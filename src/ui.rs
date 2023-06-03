@@ -17,7 +17,7 @@ use ash::vk::{
     VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, Viewport,
     WriteDescriptorSet,
 };
-use imgui::{self, BackendFlags, FontConfig, FontGlyphRanges, Io, Key};
+use imgui::{self, BackendFlags, FontConfig, Io, Key};
 use imgui::{DrawCmd, FontSource};
 
 use winit::{
@@ -249,11 +249,11 @@ struct VertexShaderUniforms {
     transform: [f32; 16],
 }
 
-#[derive(Copy, Clone, Debug)]
-struct Vec2i32 {
-    x: i32,
-    y: i32,
-}
+// #[derive(Copy, Clone, Debug)]
+// struct Vec2i32 {
+//     x: i32,
+//     y: i32,
+// }
 
 struct UiRenderState {
     vertex_buffer: UniqueBuffer,
@@ -798,8 +798,6 @@ impl UiBackend {
                     max_depth: 1f32,
                 }],
             );
-
-            // let scissors = [frame_context.scissor];
 
             let scale = [
                 2f32 / draw_data.display_size[0],
