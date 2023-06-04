@@ -2045,18 +2045,3 @@ fn screen_coords_to_complex_coords(
 
     (x, y)
 }
-
-struct ImageWithMemory {
-    device: *const Device,
-    img: Image,
-    memory: DeviceMemory,
-}
-
-impl std::ops::Drop for ImageWithMemory {
-    fn drop(&mut self) {
-        unsafe {
-            (*self.device).free_memory(self.memory, None);
-            (*self.device).destroy_image(self.img, None);
-        }
-    }
-}
