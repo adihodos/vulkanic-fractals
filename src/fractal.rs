@@ -295,13 +295,16 @@ where
 
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Screen {}x{}", self.screen_width, self.screen_height),
+            format!(
+                "Screen dimensions: {}x{}",
+                self.screen_width, self.screen_height
+            ),
         );
 
         let cursor_pos = ui.io().mouse_pos;
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Cursor position ({}, {})", cursor_pos[0], cursor_pos[1]),
+            format!("Cursor position: ({}, {})", cursor_pos[0], cursor_pos[1]),
         );
 
         ui.text_colored(
@@ -317,7 +320,7 @@ where
         );
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Zoom: {}", 1f32 / self.zoom),
+            format!("Zoom: {}x", 1f32 / self.zoom),
         );
     }
 }
@@ -444,10 +447,40 @@ impl Julia {
         },
     ];
 
-    const INTERESTING_POINTS_SINE: [InterestingPoint; 1] = [InterestingPoint {
-        coords: [1.0f32, 0.1f32],
-        desc: "(1.0 + 0.1f32 * i)",
-    }];
+    const INTERESTING_POINTS_SINE: [InterestingPoint; 8] = [
+        InterestingPoint {
+            coords: [1.0f32, 0f32],
+            desc: "(1.0 + 0 * i)",
+        },
+        InterestingPoint {
+            coords: [1.0f32, 0.1f32],
+            desc: "(1.0 + 0.1f32 * i)",
+        },
+        InterestingPoint {
+            coords: [1f32, 1f32],
+            desc: "(1.0 + 1 * i)",
+        },
+        InterestingPoint {
+            coords: [0.984808f32, 0.173648f32],
+            desc: "(0.984808 + 0.173648 * i)",
+        },
+        InterestingPoint {
+            coords: [-1.29904f32, -0.75f32],
+            desc: "(-1.29904 + -0.75 * i)",
+        },
+        InterestingPoint {
+            coords: [1.17462f32, 0.427525f32],
+            desc: "(1.17462, 0.427525 * i)",
+        },
+        InterestingPoint {
+            coords: [1.87939f32, 0.68404f32],
+            desc: "(1.87939 + 0.68404 * i)",
+        },
+        InterestingPoint {
+            coords: [-0.2f32, 1f32],
+            desc: "(-0.2 + 1 * i)",
+        },
+    ];
 
     const INTERESTING_POINTS_COSINE: [InterestingPoint; 5] = [
         InterestingPoint {
@@ -543,7 +576,6 @@ impl Julia {
 
                 enum_iterator::all::<JuliaIterationType>().for_each(|it| {
                     if ui.radio_button_bool(format!("{:?}", it), self.params.iteration == it) {
-                        log::info!("Clicked button {:?}", it,);
                         self.params.iteration = it;
 
                         //
