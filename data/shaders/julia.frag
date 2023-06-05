@@ -1,9 +1,5 @@
 #version 460 core
 
-in VS_OUT_FS_IN {
-    layout (location = 0) vec4 color;
-} fs_in;
-
 layout (location = 0) out vec4 FragColor;
 
 const uint COLORING_BASIC = 0;
@@ -328,7 +324,7 @@ void main() {
             break;
     }
 
-    const float smoothing_factor = smoothing / params.iterations;
+    const float smoothing_factor = (smoothing / params.iterations);
 
     vec3 color = vec3(0.0);
 

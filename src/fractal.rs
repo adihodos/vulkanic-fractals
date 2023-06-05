@@ -1,15 +1,14 @@
 use ash::vk::{
     BufferUsageFlags, ColorComponentFlags, CullModeFlags, DescriptorBufferInfo, DescriptorSet,
     DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-    DescriptorSetLayoutCreateInfo, DescriptorType, DynamicState, Extent2D, Format, FrontFace,
+    DescriptorSetLayoutCreateInfo, DescriptorType, DynamicState, Extent2D, FrontFace,
     GraphicsPipelineCreateInfo, MemoryPropertyFlags, Offset2D, Pipeline, PipelineBindPoint,
     PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
     PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
     PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
     PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
     PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-    PrimitiveTopology, Rect2D, RenderPass, SampleCountFlags, ShaderStageFlags,
-    VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, Viewport,
+    PrimitiveTopology, Rect2D, RenderPass, SampleCountFlags, ShaderStageFlags, Viewport,
     WriteDescriptorSet,
 };
 use enum_iterator::{next_cycle, previous_cycle};
@@ -698,10 +697,18 @@ impl Julia {
     }
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[repr(u32)]
+enum MandelbrotType {
+    Standard,
+    BurningShip,
+}
+
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 struct MandelbrotCPU2GPU {
     core: FractalCore<MandelbrotParams>,
+    ftype: MandelbrotType,
 }
 
 impl FractalCoreParams for MandelbrotCPU2GPU {
@@ -729,6 +736,7 @@ impl Mandelbrot {
         Self {
             params: MandelbrotCPU2GPU {
                 core: FractalCore::default(),
+                ftype: MandelbrotType::Standard,
             },
             gpu_state: FractalGPUState::new(vks),
         }
@@ -762,6 +770,13 @@ impl Mandelbrot {
         ui.window("Mandelbrot fractal parameters")
             .always_auto_resize(true)
             .build(|| {
+                enum_iterator::all::<MandelbrotType>().for_each(|it| {
+                    if ui.radio_button_bool(format!("{:?}", it), self.params.ftype == it) {
+                        self.params.ftype = it;
+                        self.params.core.reset();
+                    }
+                });
+
                 self.params.core.do_ui(ui);
             });
     }
@@ -771,7 +786,6 @@ struct FractalGPUState<T: FractalCoreParams + Copy> {
     pipeline: Pipeline,
     pipeline_layout: PipelineLayout,
     _descriptor_set_layout: DescriptorSetLayout,
-    buffer: UniqueBuffer,
     ubo_params: UniqueBuffer,
     descriptor_ubo_buffer: DescriptorSet,
     _marker: std::marker::PhantomData<T>,
@@ -820,12 +834,6 @@ where
             pipeline,
             pipeline_layout,
             _descriptor_set_layout: descriptor_set_layout,
-            buffer: UniqueBuffer::new::<f32>(
-                vks,
-                BufferUsageFlags::VERTEX_BUFFER,
-                MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-                64,
-            ),
             ubo_params,
             descriptor_ubo_buffer,
             _marker: std::marker::PhantomData::<T>,
@@ -854,9 +862,9 @@ where
                 0,
                 &[Viewport {
                     x: 0f32,
-                    y: 0f32,
+                    y: context.fb_size.height as f32,
                     width: context.fb_size.width as f32,
-                    height: context.fb_size.height as f32,
+                    height: -(context.fb_size.height as f32),
                     min_depth: 0f32,
                     max_depth: 1f32,
                 }],
@@ -872,13 +880,6 @@ where
                 self.pipeline,
             );
 
-            vks.ds.device.cmd_bind_vertex_buffers(
-                context.cmd_buff,
-                0,
-                &[self.buffer.handle],
-                &[0u64],
-            );
-
             vks.ds.device.cmd_bind_descriptor_sets(
                 context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
@@ -888,7 +889,7 @@ where
                 &[self.ubo_params.item_aligned_size as u32 * context.current_frame_id as u32],
             );
 
-            vks.ds.device.cmd_draw(context.cmd_buff, 6, 1, 0, 0);
+            vks.ds.device.cmd_draw(context.cmd_buff, 3, 1, 0, 0);
         }
     }
 
@@ -939,24 +940,8 @@ where
                     ])
                     .vertex_input_state(
                         &PipelineVertexInputStateCreateInfo::builder()
-                            .vertex_attribute_descriptions(&[
-                                *VertexInputAttributeDescription::builder()
-                                    .binding(0)
-                                    .format(Format::R32G32_SFLOAT)
-                                    .location(0)
-                                    .offset(0),
-                                *VertexInputAttributeDescription::builder()
-                                    .binding(0)
-                                    .format(Format::R32G32B32A32_SFLOAT)
-                                    .location(1)
-                                    .offset(8),
-                            ])
-                            .vertex_binding_descriptions(&[
-                                *VertexInputBindingDescription::builder()
-                                    .binding(0)
-                                    .input_rate(VertexInputRate::VERTEX)
-                                    .stride(24),
-                            ]),
+                            .vertex_attribute_descriptions(&[])
+                            .vertex_binding_descriptions(&[]),
                     )
                     .input_assembly_state(
                         &PipelineInputAssemblyStateCreateInfo::builder()

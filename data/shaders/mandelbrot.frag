@@ -1,9 +1,5 @@
 #version 460 core
 
-in VS_OUT_FS_IN {
-    layout (location = 0) vec4 color;
-} fs_in;
-
 layout (location = 0) out vec4 FragColor;
 
 const uint COLORING_BASIC = 0;
@@ -12,6 +8,9 @@ const uint COLORING_LOG = 2;
 const uint COLORING_HSV = 3;
 const uint COLORING_RAINBOW = 4;
 const uint COLORING_PALETTE = 5;
+
+const uint M_TYPE_STANDARD = 0;
+const uint M_TYPE_BURNING_SHIP = 1;
 
 layout (std140, set = 0, binding = 0) uniform FractalParams {
     uint screen_width;
@@ -26,6 +25,7 @@ layout (std140, set = 0, binding = 0) uniform FractalParams {
     float fymin;
     float fymax;
     uint escape_radius;
+    uint ftype;
 } params;
 
 struct Complex {
@@ -207,13 +207,7 @@ vec3 color_palette(in float n, in float max_iterations) {
    return palette(n, a, b, c, d);
 }
 
-
-void main() {
-    const Complex c = screen_coords_to_complex_coords(
-        gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax
-    );
-
-    Complex z = Complex(0.0, 0.0);
+float mandelbrot_standard(in Complex z, in Complex c) {
     uint iterations = 0;
 
     while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
@@ -227,6 +221,48 @@ void main() {
     iterations += 1;    // a couple of extra iterations helps
     float modulus = complex_mag(z);
     float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
+
+    return mu;
+}
+
+float mandelbrot_burning_ship(in Complex z, in Complex c) {
+    uint iterations = 0;
+
+    while (complex_mag_squared(z) <= 10.0 && iterations < params.iterations) {
+        const float re = z.re * z.re - z.im * z.im - c.re;
+        const float im = 2.0 * abs(z.re * z.im) - c.im;
+        z = Complex(re, im);
+        iterations += 1;
+    }
+
+    float modulus = complex_mag(z);
+    float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
+
+    return mu;
+}
+
+void main() {
+    const Complex c = screen_coords_to_complex_coords(
+        gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax
+    );
+
+    Complex z = Complex(0.0, 0.0);
+
+    float mu = 0.0;
+
+    switch (params.ftype) {
+        case M_TYPE_STANDARD:
+            mu = mandelbrot_standard(z, c);
+            break;
+
+        case M_TYPE_BURNING_SHIP:
+            mu = mandelbrot_burning_ship(z, c);
+            break;
+
+        default:
+            break;
+    }
+
     float mu2 = mu;
     mu = sqrt(mu / params.iterations);
 
@@ -256,7 +292,6 @@ void main() {
         case COLORING_PALETTE:
             color = color_palette(mu, params.iterations);
             break;
-
     }
 
     FragColor = vec4(color, 1.0);
