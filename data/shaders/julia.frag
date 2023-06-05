@@ -227,6 +227,7 @@ vec3 color_palette(in float n, in float max_iterations) {
 const uint J_ITERATION_QUADRATIC = 0;
 const uint J_ITERATION_SINE = 1;
 const uint J_ITERATION_COSINE = 2;
+const uint J_ITERATION_CUBIC = 3;
 
 float julia_quadratic(in Complex z, in Complex c) {
     uint iterations = 0;
@@ -245,6 +246,25 @@ float julia_quadratic(in Complex z, in Complex c) {
 
     return smooth_color;
 }
+
+float julia_cubic(in Complex z, in Complex c) {
+    uint iterations = 0;
+    float smooth_color = exp(-complex_mag(z));
+
+    while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
+        z = complex_add(complex_mul(complex_mul(z, z), z), c);
+        iterations += 1;
+        smooth_color += exp(-complex_mag(z));
+    }
+
+    for (uint i = 0; i < 2; ++i) {
+        z = complex_add(complex_mul(complex_mul(z, z), z), c);
+        smooth_color += exp(-complex_mag(z));
+    }
+
+    return smooth_color;
+}
+
 
 float julia_cosine(in Complex z, in Complex c) {
     uint iterations = 0;
@@ -296,6 +316,10 @@ void main() {
 
         case J_ITERATION_COSINE:
             smoothing = julia_cosine(z, c);
+            break;
+
+        case J_ITERATION_CUBIC:
+            smoothing = julia_cubic(z, c);
             break;
 
         default:

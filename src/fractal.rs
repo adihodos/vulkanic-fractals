@@ -350,6 +350,7 @@ enum JuliaIterationType {
     Quadratic,
     Sine,
     Cosine,
+    Cubic,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -368,8 +369,8 @@ impl FractalCoreParams for JuliaCPU2GPU {
     const ZOOM_OUT_FACTOR: f32 = 2f32;
     const FRACTAL_XMIN: f32 = -2f32;
     const FRACTAL_XMAX: f32 = 2f32;
-    const FRACTAL_YMIN: f32 = -1f32;
-    const FRACTAL_YMAX: f32 = 1f32;
+    const FRACTAL_YMIN: f32 = -1.5f32;
+    const FRACTAL_YMAX: f32 = 1.5f32;
     const ESC_RADIUS_MIN: u32 = 2;
     const ESC_RADIUS_MAX: u32 = 4096;
     const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
@@ -404,6 +405,7 @@ pub struct Julia {
     point_quadratic_idx: usize,
     point_sine_idx: usize,
     point_cosine_idx: usize,
+    point_cubic_idx: usize,
 }
 
 struct InterestingPoint {
@@ -517,6 +519,29 @@ impl Julia {
         },
     ];
 
+    const INTERESTING_POINTS_CUBIC: [InterestingPoint; 5] = [
+        InterestingPoint {
+            coords: [-0.5f32, 0.05f32],
+            desc: "-(0.5 + 0.05 * i)",
+        },
+        InterestingPoint {
+            coords: [0.7f32, 0.5f32],
+            desc: "(0.7 + 0.5 * i)",
+        },
+        InterestingPoint {
+            coords: [0.53f32, 0.1f32],
+            desc: "(0.53 + 0.1 * i)",
+        },
+        InterestingPoint {
+            coords: [0.52f32, 0.1f32],
+            desc: "(0.52 + 0.1 * i)",
+        },
+        InterestingPoint {
+            coords: [0.515f32, 0.1f32],
+            desc: "(0.515 + 0.1 * i)",
+        },
+    ];
+
     pub fn new(vks: &VulkanState) -> Julia {
         Self {
             params: JuliaCPU2GPU::new(
@@ -528,6 +553,7 @@ impl Julia {
             point_quadratic_idx: 0,
             point_sine_idx: 0,
             point_cosine_idx: 0,
+            point_cubic_idx: 0,
         }
     }
 
@@ -590,6 +616,9 @@ impl Julia {
                             JuliaIterationType::Sine => {
                                 &Self::INTERESTING_POINTS_SINE[self.point_sine_idx].coords
                             }
+                            JuliaIterationType::Cubic => {
+                                &Self::INTERESTING_POINTS_CUBIC[self.point_cubic_idx].coords
+                            }
                         };
 
                         self.params.c_x = center[0];
@@ -649,6 +678,19 @@ impl Julia {
                             self.point_cosine_idx = sel_idx;
                             self.params.c_x = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[0];
                             self.params.c_y = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[1];
+                        });
+                    }
+
+                    JuliaIterationType::Cubic => {
+                        do_combo_interest_points(
+                            "Interesting points to explore (cubic)",
+                            self.point_cubic_idx,
+                            &Self::INTERESTING_POINTS_CUBIC,
+                        )
+                        .map(|sel_idx| {
+                            self.point_cubic_idx = sel_idx;
+                            self.params.c_x = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[0];
+                            self.params.c_y = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[1];
                         });
                     }
                 }
