@@ -384,16 +384,117 @@ impl std::default::Default for JuliaCPU2GPU {
     }
 }
 
+impl JuliaCPU2GPU {
+    fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType) -> JuliaCPU2GPU {
+        Self {
+            core: Default::default(),
+            c_x,
+            c_y,
+            iteration,
+        }
+    }
+}
+
 pub struct Julia {
     params: JuliaCPU2GPU,
     gpu_state: FractalGPUState<JuliaCPU2GPU>,
+    point_quadratic_idx: usize,
+    point_sine_idx: usize,
+    point_cosine_idx: usize,
+}
+
+struct InterestingPoint {
+    coords: [f32; 2],
+    desc: &'static str,
 }
 
 impl Julia {
+    const INTERESTING_POINTS_QUADRATIC: [InterestingPoint; 8] = [
+        InterestingPoint {
+            coords: [0f32, 1f32],
+            desc: "(0.0 + 1.0 * i) - dentrite fractal",
+        },
+        InterestingPoint {
+            coords: [-0.123f32, 0.745f32],
+            desc: "(-0.123f32 + 0.745 * i) - douady's rabbit fractal",
+        },
+        InterestingPoint {
+            coords: [-0.750f32, 0f32],
+            desc: "(-0.750 + 0 * i) - san marco fractal",
+        },
+        InterestingPoint {
+            coords: [-0.391f32, -0.587f32],
+            desc: "(-0.391 + -0.587f32 * i) - siegel disk fractal",
+        },
+        InterestingPoint {
+            coords: [-0.7f32, -0.3f32],
+            desc: "(-0.7f32 + -0.3f32 * i) - NEAT cauliflower thingy",
+        },
+        InterestingPoint {
+            coords: [-0.75f32, -0.2f32],
+            desc: "(-0.75f32 + -0.2f32 * i) - galaxies",
+        },
+        InterestingPoint {
+            coords: [-0.75f32, 0.15f32],
+            desc: "(-0.75f32 + 0.15f32 * i) - groovy",
+        },
+        InterestingPoint {
+            coords: [-0.7f32, 0.35f32],
+            desc: "(-0.7f32 + 0.35f32 * i) - frost",
+        },
+    ];
+
+    const INTERESTING_POINTS_SINE: [InterestingPoint; 1] = [InterestingPoint {
+        coords: [1.0f32, 0.1f32],
+        desc: "(1.0 + 0.1f32 * i)",
+    }];
+
+    const INTERESTING_POINTS_COSINE: [InterestingPoint; 5] = [
+        InterestingPoint {
+            coords: [1.0f32, -0.5f32],
+            desc: "(1.0 - 0.5 * i) - good colors",
+        },
+        InterestingPoint {
+            coords: [
+                std::f32::consts::FRAC_PI_2,
+                std::f32::consts::FRAC_PI_2 * 0.6f32,
+            ],
+            desc: "(PI/2, PI/2 * 0.6) - dendrites",
+        },
+        InterestingPoint {
+            coords: [
+                std::f32::consts::FRAC_PI_2,
+                std::f32::consts::FRAC_PI_2 * 0.4f32,
+            ],
+            desc: "(PI/2, PI/2 * 0.4) - dendrites",
+        },
+        InterestingPoint {
+            coords: [
+                std::f32::consts::FRAC_PI_2 * 2.0f32,
+                std::f32::consts::FRAC_PI_2 * 0.25f32,
+            ],
+            desc: "(PI, PI/2 * 0.25) - fuzzy spots",
+        },
+        InterestingPoint {
+            coords: [
+                std::f32::consts::FRAC_PI_2 * 1.5f32,
+                std::f32::consts::FRAC_PI_2 * 0.05f32,
+            ],
+            desc: "(PI * 1.5, PI/2 * 0.05) - fuzzy spots",
+        },
+    ];
+
     pub fn new(vks: &VulkanState) -> Julia {
         Self {
-            params: JuliaCPU2GPU::default(),
+            params: JuliaCPU2GPU::new(
+                Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
+                Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
+                JuliaIterationType::Quadratic,
+            ),
             gpu_state: FractalGPUState::new(vks),
+            point_quadratic_idx: 0,
+            point_sine_idx: 0,
+            point_cosine_idx: 0,
         }
     }
 
@@ -429,6 +530,7 @@ impl Julia {
             .build(|| {
                 self.params.core.do_ui(ui);
 
+                ui.separator();
                 let mut c_ptr: [f32; 2] = [self.params.c_x, self.params.c_y];
 
                 if ui.input_float2("C point", &mut c_ptr).build() {
@@ -436,15 +538,87 @@ impl Julia {
                     self.params.c_y = c_ptr[1];
                 }
 
-                ui.new_line();
+                ui.separator();
                 ui.text("Iteration:");
 
                 enum_iterator::all::<JuliaIterationType>().for_each(|it| {
                     if ui.radio_button_bool(format!("{:?}", it), self.params.iteration == it) {
                         log::info!("Clicked button {:?}", it,);
                         self.params.iteration = it;
+
+                        //
+                        // reset center
+                        let center = match it {
+                            JuliaIterationType::Quadratic => {
+                                &Self::INTERESTING_POINTS_QUADRATIC[self.point_quadratic_idx].coords
+                            }
+                            JuliaIterationType::Cosine => {
+                                &Self::INTERESTING_POINTS_COSINE[self.point_cosine_idx].coords
+                            }
+                            JuliaIterationType::Sine => {
+                                &Self::INTERESTING_POINTS_SINE[self.point_sine_idx].coords
+                            }
+                        };
+
+                        self.params.c_x = center[0];
+                        self.params.c_y = center[1];
                     }
                 });
+
+                let do_combo_interest_points =
+                    |label: &str, sel_idx: usize, points: &[InterestingPoint]| {
+                        let mut pt_idx = sel_idx;
+
+                        if ui.combo(label, &mut pt_idx, points, |pt_coords| {
+                            std::borrow::Cow::Borrowed(&pt_coords.desc)
+                        }) {
+                            Some(pt_idx)
+                        } else {
+                            None
+                        }
+                    };
+
+                ui.separator();
+                match self.params.iteration {
+                    JuliaIterationType::Quadratic => {
+                        do_combo_interest_points(
+                            "Interesting points to explore (quadratic)",
+                            self.point_quadratic_idx,
+                            &Self::INTERESTING_POINTS_QUADRATIC,
+                        )
+                        .map(|sel_idx| {
+                            self.point_quadratic_idx = sel_idx;
+                            self.params.c_x = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[0];
+                            self.params.c_y = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[1];
+                        });
+                    }
+
+                    JuliaIterationType::Sine => {
+                        do_combo_interest_points(
+                            "Interesting points to explore (sine)",
+                            self.point_sine_idx,
+                            &Self::INTERESTING_POINTS_SINE,
+                        )
+                        .map(|sel_idx| {
+                            self.point_sine_idx = sel_idx;
+                            self.params.c_x = Self::INTERESTING_POINTS_SINE[sel_idx].coords[0];
+                            self.params.c_y = Self::INTERESTING_POINTS_SINE[sel_idx].coords[1];
+                        });
+                    }
+
+                    JuliaIterationType::Cosine => {
+                        do_combo_interest_points(
+                            "Interesting points to explore (cosine)",
+                            self.point_cosine_idx,
+                            &Self::INTERESTING_POINTS_COSINE,
+                        )
+                        .map(|sel_idx| {
+                            self.point_cosine_idx = sel_idx;
+                            self.params.c_x = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[0];
+                            self.params.c_y = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[1];
+                        });
+                    }
+                }
             });
     }
 }
