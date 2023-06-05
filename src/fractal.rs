@@ -254,6 +254,72 @@ where
             ..Default::default()
         };
     }
+
+    pub fn do_ui(&mut self, ui: &imgui::Ui) {
+        //
+        // coloring algorithm
+        if let Some(_cb) = ui.begin_combo("Coloring algorithm", format!("{:?}", self.coloring)) {
+            let mut selected = self.coloring;
+            for item in enum_iterator::all::<Coloring>() {
+                if selected == item {
+                    ui.set_item_default_focus();
+                }
+
+                let clicked = ui
+                    .selectable_config(format!("{:?}", item))
+                    .selected(selected == item)
+                    .build();
+
+                // When item is clicked, store it
+                if clicked {
+                    selected = item;
+                    self.coloring = item;
+                }
+            }
+        }
+
+        let mut escape_radius = self.escape_radius;
+        ui.slider_config("Escape radius", T::ESC_RADIUS_MIN, T::ESC_RADIUS_MAX)
+            .build(&mut escape_radius);
+        self.escape_radius = escape_radius;
+
+        let mut iterations = self.iterations;
+
+        ui.slider_config("Max iterations", T::MIN_ITERATIONS, T::MAX_ITERATIONS)
+            .build(&mut iterations);
+
+        self.iterations = iterations;
+
+        ui.separator();
+        ui.label_text("", "Info");
+
+        ui.text_colored(
+            [1f32, 0f32, 0f32, 1f32],
+            format!("Screen {}x{}", self.screen_width, self.screen_height),
+        );
+
+        let cursor_pos = ui.io().mouse_pos;
+        ui.text_colored(
+            [1f32, 0f32, 0f32, 1f32],
+            format!("Cursor position ({}, {})", cursor_pos[0], cursor_pos[1]),
+        );
+
+        ui.text_colored(
+            [1f32, 0f32, 0f32, 1f32],
+            format!("Center: ({}, {})", self.ox, self.oy),
+        );
+        ui.text_colored(
+            [1f32, 0f32, 0f32, 1f32],
+            format!(
+                "Domain: ({}, {}) x ({}, {})",
+                self.fxmin, self.fymin, self.fxmax, self.fymax
+            ),
+        );
+        ui.text_colored(
+            [1f32, 0f32, 0f32, 1f32],
+            format!("Zoom: {}", 1f32 / self.zoom),
+        );
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -275,12 +341,21 @@ impl FractalCoreParams for MandelbrotParams {
     const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.frag";
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[repr(u32)]
+enum JuliaIterationType {
+    Quadratic,
+    Sine,
+    Cosine,
+}
+
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct JuliaCPU2GPU {
     core: FractalCore<JuliaCPU2GPU>,
     c_x: f32,
     c_y: f32,
+    iteration: JuliaIterationType,
 }
 
 impl FractalCoreParams for JuliaCPU2GPU {
@@ -303,6 +378,7 @@ impl std::default::Default for JuliaCPU2GPU {
         Self {
             c_x: -0.7f32,
             c_y: -0.3f32,
+            iteration: JuliaIterationType::Quadratic,
             core: Default::default(),
         }
     }
@@ -316,11 +392,7 @@ pub struct Julia {
 impl Julia {
     pub fn new(vks: &VulkanState) -> Julia {
         Self {
-            params: JuliaCPU2GPU {
-                c_x: -0.7f32,
-                c_y: -0.3f32,
-                core: FractalCore::default(),
-            },
+            params: JuliaCPU2GPU::default(),
             gpu_state: FractalGPUState::new(vks),
         }
     }
@@ -349,6 +421,31 @@ impl Julia {
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
         self.gpu_state.render(vks, context, &[self.params]);
+    }
+
+    pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
+        ui.window("Julia fractal parameters")
+            .always_auto_resize(true)
+            .build(|| {
+                self.params.core.do_ui(ui);
+
+                let mut c_ptr: [f32; 2] = [self.params.c_x, self.params.c_y];
+
+                if ui.input_float2("C point", &mut c_ptr).build() {
+                    self.params.c_x = c_ptr[0];
+                    self.params.c_y = c_ptr[1];
+                }
+
+                ui.new_line();
+                ui.text("Iteration:");
+
+                enum_iterator::all::<JuliaIterationType>().for_each(|it| {
+                    if ui.radio_button_bool(format!("{:?}", it), self.params.iteration == it) {
+                        log::info!("Clicked button {:?}", it,);
+                        self.params.iteration = it;
+                    }
+                });
+            });
     }
 }
 
@@ -410,6 +507,14 @@ impl Mandelbrot {
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
         self.gpu_state.render(vks, context, &[self.params]);
+    }
+
+    pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
+        ui.window("Mandelbrot fractal parameters")
+            .always_auto_resize(true)
+            .build(|| {
+                self.params.core.do_ui(ui);
+            });
     }
 }
 

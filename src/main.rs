@@ -1,30 +1,25 @@
-use std::{
-    ffi::{c_char, CString},
-    mem::size_of,
-    os::raw::c_void,
-};
+use std::ffi::{c_char, CString};
 
 use ash::{
     extensions::ext::DebugUtils,
     vk::{
         AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, Buffer, BufferCreateInfo, BufferImageCopy, BufferUsageFlags,
-        ClearColorValue, ClearValue, ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo,
-        CommandBufferBeginInfo, CommandBufferLevel, CommandBufferResetFlags,
-        CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
-        ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags,
-        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags,
-        DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
-        DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
-        DeviceQueueCreateInfo, DeviceSize, DynamicState, Extent2D, Fence, FenceCreateFlags,
-        FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
-        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateInfo, ImageLayout,
-        ImageMemoryBarrier, ImageSubresource, ImageSubresourceLayers, ImageSubresourceRange,
-        ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo,
-        MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags,
-        MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
+        AttachmentStoreOp, BufferImageCopy, BufferUsageFlags, ClearColorValue, ClearValue,
+        ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo,
+        CommandBufferLevel, CommandBufferResetFlags, CommandBufferUsageFlags, CommandPool,
+        CommandPoolCreateFlags, CommandPoolCreateInfo, ComponentMapping, ComponentSwizzle,
+        CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
+        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT,
+        DependencyFlags, DescriptorBufferInfo, DescriptorPool, DescriptorPoolCreateInfo,
+        DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
+        DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo, DescriptorType,
+        DeviceCreateInfo, DeviceMemory, DeviceQueueCreateInfo, DeviceSize, DynamicState, Extent2D,
+        Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo,
+        FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateInfo,
+        ImageLayout, ImageMemoryBarrier, ImageSubresource, ImageSubresourceLayers,
+        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags,
+        MemoryPropertyFlags, MemoryRequirements, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
         PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceType, Pipeline,
         PipelineBindPoint, PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
         PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
@@ -47,7 +42,7 @@ use ui::UiBackend;
 use vulkan_renderer::{UniqueBuffer, UniqueBufferMapping, UniqueImage};
 use winit::{
     dpi::PhysicalPosition,
-    event::{ElementState, Event, KeyboardInput, MouseButton, VirtualKeyCode, WindowEvent},
+    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
     event_loop::EventLoop,
     window::WindowBuilder,
 };
@@ -209,102 +204,36 @@ impl FractalSimulation {
     }
 
     fn setup_ui(&mut self, window: &winit::window::Window) {
-        // let ui = self.ui.new_frame(window);
+        let ui = self.ui.new_frame(window);
+        ui.window("Fractal type")
+            .size([400f32, 100f32], imgui::Condition::Always)
+            .build(|| {
+                ui.begin_combo("Fractal type", format!("{:?}", self.ftype))
+                    .map(|_| {
+                        let mut selected = self.ftype;
+                        for item in enum_iterator::all::<FractalType>() {
+                            if selected == item {
+                                ui.set_item_default_focus();
+                            }
 
-        // ui.window("Fractal Explorer")
-        //     .size([400f32, 600f32], imgui::Condition::FirstUseEver)
-        //     .build(|| {
-        //         if ui.button("Reset parameters") {
-        //             self.fractal.params = FractalParameters {
-        //                 screen_height: self.fractal.params.screen_height,
-        //                 screen_width: self.fractal.params.screen_width,
-        //                 ..FractalParameters::default()
-        //             };
-        //         }
-        //         //
-        //         // coloring algorithm
-        //         if let Some(_cb) = ui.begin_combo(
-        //             "Coloring algorithm",
-        //             format!("{:?}", self.fractal.params.coloring),
-        //         ) {
-        //             let mut selected = self.fractal.params.coloring;
-        //             for item in enum_iterator::all::<Coloring>() {
-        //                 if selected == item {
-        //                     ui.set_item_default_focus();
-        //                 }
+                            let clicked = ui
+                                .selectable_config(format!("{:?}", item))
+                                .selected(selected == item)
+                                .build();
 
-        //                 let clicked = ui
-        //                     .selectable_config(format!("{:?}", item))
-        //                     .selected(selected == item)
-        //                     .build();
+                            // When item is clicked, store it
+                            if clicked {
+                                selected = item;
+                                self.ftype = item;
+                            }
+                        }
+                    })
+            });
 
-        //                 // When item is clicked, store it
-        //                 if clicked {
-        //                     selected = item;
-        //                     self.fractal.params.coloring = item;
-        //                 }
-        //             }
-        //         }
-
-        //         let mut escape_radius = self.fractal.params.escape_radius;
-        //         ui.slider_config(
-        //             "Escape radius",
-        //             FractalParameters::ESC_RADIUS_MIN,
-        //             FractalParameters::ESC_RADIUS_MAX,
-        //         )
-        //         .build(&mut escape_radius);
-        //         self.fractal.params.escape_radius = escape_radius;
-
-        //         let mut iterations = self.fractal.params.iterations;
-
-        //         ui.slider_config(
-        //             "Max iterations",
-        //             FractalParameters::MIN_TERATIONS,
-        //             FractalParameters::MAX_ITERATIONS,
-        //         )
-        //         .build(&mut iterations);
-
-        //         self.fractal.params.iterations = iterations;
-
-        //         ui.separator();
-        //         ui.label_text("", "Info");
-
-        //         ui.text_colored(
-        //             [1f32, 0f32, 0f32, 1f32],
-        //             format!(
-        //                 "Screen {}x{}",
-        //                 self.fractal.params.screen_width, self.fractal.params.screen_height
-        //             ),
-        //         );
-
-        //         let cursor_pos = ui.io().mouse_pos;
-        //         ui.text_colored(
-        //             [1f32, 0f32, 0f32, 1f32],
-        //             format!("Cursor position ({}, {})", cursor_pos[0], cursor_pos[1]),
-        //         );
-
-        //         ui.text_colored(
-        //             [1f32, 0f32, 0f32, 1f32],
-        //             format!(
-        //                 "Center: ({}, {})",
-        //                 self.fractal.params.ox, self.fractal.params.oy
-        //             ),
-        //         );
-        //         ui.text_colored(
-        //             [1f32, 0f32, 0f32, 1f32],
-        //             format!(
-        //                 "Domain: ({}, {}) x ({}, {})",
-        //                 self.fractal.params.fxmin,
-        //                 self.fractal.params.fymin,
-        //                 self.fractal.params.fxmax,
-        //                 self.fractal.params.fymax
-        //             ),
-        //         );
-        //         ui.text_colored(
-        //             [1f32, 0f32, 0f32, 1f32],
-        //             format!("Zoom: {}", 1f32 / self.fractal.params.zoom),
-        //         );
-        //     });
+        match self.ftype {
+            FractalType::Julia => self.julia.do_ui(ui),
+            FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
+        }
     }
 
     fn handle_window_event(
@@ -396,8 +325,7 @@ impl FractalSimulation {
                 event: ref win_event,
                 ..
             } => {
-                let wants_input = false;
-                // self.ui.handle_event(window, &event);
+                let wants_input = self.ui.handle_event(window, &event);
                 if !wants_input {
                     self.handle_window_event(window, win_event, control_flow);
                 }
@@ -414,6 +342,9 @@ impl FractalSimulation {
                         self.mandelbrot.render(&self.vks, &frame_context);
                     }
                 }
+
+                self.setup_ui(window);
+                self.ui.draw_frame(&self.vks, &frame_context);
 
                 self.end_rendering(&frame_context);
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1417,20 +1348,4 @@ pub struct FrameRenderContext {
     pub framebuffer: Framebuffer,
     pub fb_size: Extent2D,
     pub current_frame_id: u32,
-}
-
-fn screen_coords_to_complex_coords(
-    px: f32,
-    py: f32,
-    dxmin: f32,
-    dxmax: f32,
-    dymin: f32,
-    dymax: f32,
-    screen_width: f32,
-    screen_height: f32,
-) -> (f32, f32) {
-    let x = (px / screen_width) * (dxmax - dxmin) + dxmin;
-    let y = (py / screen_height) * (dymax - dymin) + dymin;
-
-    (x, y)
 }

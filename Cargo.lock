@@ -785,19 +785,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 
 [[package]]
-name = "playground-vulkan"
-version = "0.1.0"
-dependencies = [
- "ash",
- "enum-iterator",
- "flexi_logger",
- "imgui",
- "log",
- "shaderc",
- "winit",
-]
-
-[[package]]
 name = "png"
 version = "0.17.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1101,6 +1088,19 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
+
+[[package]]
+name = "vulkanic-fractals"
+version = "0.1.0"
+dependencies = [
+ "ash",
+ "enum-iterator",
+ "flexi_logger",
+ "imgui",
+ "log",
+ "shaderc",
+ "winit",
+]
 
 [[package]]
 name = "wasi"
