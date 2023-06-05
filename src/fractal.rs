@@ -547,7 +547,7 @@ impl Julia {
                         self.params.iteration = it;
 
                         //
-                        // reset center
+                        // reset center + zoom
                         let center = match it {
                             JuliaIterationType::Quadratic => {
                                 &Self::INTERESTING_POINTS_QUADRATIC[self.point_quadratic_idx].coords
@@ -562,6 +562,7 @@ impl Julia {
 
                         self.params.c_x = center[0];
                         self.params.c_y = center[1];
+                        self.params.core.reset();
                     }
                 });
 
