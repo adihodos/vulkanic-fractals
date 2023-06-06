@@ -22,3 +22,8 @@ cargo run --release
 - Left click - center at pixel (if CTRL is pressed it will also zoom in)
 - Right click - zoom out
 - Mouse wheel - zoom in/out
+
+![thumbnail](./images/1.png)
+![thumbnail](./images/2.png)
+![thumbnail](./images/3.png)
+![thumbnail](./images/4.png)
