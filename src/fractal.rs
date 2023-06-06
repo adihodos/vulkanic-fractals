@@ -14,8 +14,11 @@ use ash::vk::{
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
-    vulkan_renderer::{compile_shader_from_file, UniqueBuffer, UniqueBufferMapping},
-    FrameRenderContext, InputState, VulkanDeviceState, VulkanState,
+    vulkan_renderer::{
+        compile_shader_from_file, FrameRenderContext, UniqueBuffer, UniqueBufferMapping,
+        VulkanDeviceState, VulkanState,
+    },
+    InputState,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
