@@ -13,3 +13,4 @@ enum-iterator = "*"
 ash = { version = "*", features = [ "linked" ] }
 shaderc = "*"
 imgui = "0.11.0"
+thiserror = "1.0.50"

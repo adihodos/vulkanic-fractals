@@ -50,3 +50,6 @@ Thumbs.db
 
 
 /target
+
+# VS Code
+.vscode/

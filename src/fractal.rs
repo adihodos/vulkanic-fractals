@@ -1,22 +1,21 @@
+use std::mem::size_of;
+
 use ash::vk::{
-    BufferUsageFlags, ColorComponentFlags, CullModeFlags, DescriptorBufferInfo, DescriptorSet,
-    DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
-    DescriptorSetLayoutCreateInfo, DescriptorType, DynamicState, Extent2D, FrontFace,
+    BufferUsageFlags, ColorComponentFlags, CullModeFlags, DynamicState, Extent2D, FrontFace,
     GraphicsPipelineCreateInfo, MemoryPropertyFlags, Offset2D, Pipeline, PipelineBindPoint,
     PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
     PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-    PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
-    PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-    PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-    PrimitiveTopology, Rect2D, RenderPass, SampleCountFlags, ShaderStageFlags, Viewport,
-    WriteDescriptorSet,
+    PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+    PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
+    PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, RenderPass,
+    SampleCountFlags, ShaderStageFlags, Viewport,
 };
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
     vulkan_renderer::{
-        compile_shader_from_file, FrameRenderContext, UniqueBuffer, UniqueBufferMapping,
-        VulkanDeviceState, VulkanState,
+        compile_shader_from_file, BindlessResourceHandle, BindlessResourceSystem,
+        FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanDeviceState, VulkanState,
     },
     InputState,
 };
@@ -49,10 +48,11 @@ trait FractalCoreParams {
 
     const VERTEX_SHADER_MODULE: &'static str;
     const FRAGMENT_SHADER_MODULE: &'static str;
+    const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str;
 }
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C)]
+#[repr(C, align(16))]
 struct FractalCore<T: FractalCoreParams> {
     screen_width: u32,
     screen_height: u32,
@@ -330,22 +330,6 @@ where
 #[derive(Copy, Clone, Debug)]
 struct MandelbrotParams {}
 
-impl FractalCoreParams for MandelbrotParams {
-    const MIN_ITERATIONS: u32 = 4;
-    const MAX_ITERATIONS: u32 = 2048;
-    const ZOOM_IN_FACTOR: f32 = 0.85f32;
-    const ZOOM_OUT_FACTOR: f32 = 2f32;
-    const FRACTAL_XMIN: f32 = -2f32;
-    const FRACTAL_XMAX: f32 = 2f32;
-    const FRACTAL_YMIN: f32 = -1f32;
-    const FRACTAL_YMAX: f32 = 1f32;
-    const ESC_RADIUS_MIN: u32 = 2;
-    const ESC_RADIUS_MAX: u32 = 4096;
-
-    const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
-    const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.frag";
-}
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
 #[repr(u32)]
 enum JuliaIterationType {
@@ -356,7 +340,7 @@ enum JuliaIterationType {
 }
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct JuliaCPU2GPU {
     core: FractalCore<JuliaCPU2GPU>,
     c_x: f32,
@@ -377,6 +361,7 @@ impl FractalCoreParams for JuliaCPU2GPU {
     const ESC_RADIUS_MAX: u32 = 4096;
     const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
     const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/julia.frag";
+    const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/julia.bindless.frag";
 }
 
 impl std::default::Default for JuliaCPU2GPU {
@@ -544,14 +529,14 @@ impl Julia {
         },
     ];
 
-    pub fn new(vks: &VulkanState) -> Julia {
+    pub fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Julia {
         Self {
             params: JuliaCPU2GPU::new(
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
                 JuliaIterationType::Quadratic,
             ),
-            gpu_state: FractalGPUState::new(vks),
+            gpu_state: FractalGPUState::new(vks, bindless),
             point_quadratic_idx: 0,
             point_sine_idx: 0,
             point_cosine_idx: 0,
@@ -582,7 +567,7 @@ impl Julia {
     }
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
-        self.gpu_state.render(vks, context, &[self.params]);
+        self.gpu_state.render(vks, context, &self.params);
     }
 
     pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
@@ -708,9 +693,9 @@ enum MandelbrotType {
 }
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C)]
+#[repr(C, align(16))]
 struct MandelbrotCPU2GPU {
-    core: FractalCore<MandelbrotParams>,
+    core: FractalCore<MandelbrotCPU2GPU>,
     ftype: MandelbrotType,
 }
 
@@ -727,6 +712,7 @@ impl FractalCoreParams for MandelbrotCPU2GPU {
     const ESC_RADIUS_MAX: u32 = 4096;
     const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
     const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.frag";
+    const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.bindless.frag";
 }
 
 pub struct Mandelbrot {
@@ -735,13 +721,13 @@ pub struct Mandelbrot {
 }
 
 impl Mandelbrot {
-    pub fn new(vks: &VulkanState) -> Mandelbrot {
+    pub fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
         Self {
             params: MandelbrotCPU2GPU {
                 core: FractalCore::default(),
                 ftype: MandelbrotType::Standard,
             },
-            gpu_state: FractalGPUState::new(vks),
+            gpu_state: FractalGPUState::new(vks, bindless),
         }
     }
 
@@ -766,7 +752,7 @@ impl Mandelbrot {
     }
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
-        self.gpu_state.render(vks, context, &[self.params]);
+        self.gpu_state.render(vks, context, &self.params);
     }
 
     pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
@@ -787,10 +773,9 @@ impl Mandelbrot {
 
 struct FractalGPUState<T: FractalCoreParams + Copy> {
     pipeline: Pipeline,
-    pipeline_layout: PipelineLayout,
-    _descriptor_set_layout: DescriptorSetLayout,
+    bindless_layout: PipelineLayout,
     ubo_params: UniqueBuffer,
-    descriptor_ubo_buffer: DescriptorSet,
+    ubo_handle: BindlessResourceHandle,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -798,52 +783,28 @@ impl<T> FractalGPUState<T>
 where
     T: FractalCoreParams + Copy,
 {
-    fn new(vks: &VulkanState) -> Self {
-        let (pipeline, pipeline_layout, descriptor_set_layout) =
-            Self::create_graphics_pipeline(&vks.ds, vks.renderpass);
+    fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Self {
+        let pipeline = Self::create_graphics_pipeline(&vks.ds, vks.renderpass, bindless);
 
         let ubo_params = UniqueBuffer::new::<T>(
             vks,
-            BufferUsageFlags::UNIFORM_BUFFER,
-            MemoryPropertyFlags::HOST_VISIBLE,
+            BufferUsageFlags::STORAGE_BUFFER,
+            MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
             vks.swapchain.max_frames as usize,
         );
 
-        let descriptor_ubo_buffer = unsafe {
-            vks.ds.device.allocate_descriptor_sets(
-                &DescriptorSetAllocateInfo::builder()
-                    .descriptor_pool(vks.ds.descriptor_pool)
-                    .set_layouts(&[descriptor_set_layout]),
-            )
-        }
-        .expect("Failed to allocate descriptor set")[0];
-
-        unsafe {
-            vks.ds.device.update_descriptor_sets(
-                &[*WriteDescriptorSet::builder()
-                    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                    .dst_array_element(0)
-                    .dst_binding(0)
-                    .dst_set(descriptor_ubo_buffer)
-                    .buffer_info(&[*DescriptorBufferInfo::builder()
-                        .buffer(ubo_params.handle)
-                        .offset(0)
-                        .range(ubo_params.item_aligned_size as u64)])],
-                &[],
-            );
-        }
+        let ubo_handle = bindless.register_ssbo(&vks.ds, &ubo_params);
 
         Self {
             pipeline,
-            pipeline_layout,
-            _descriptor_set_layout: descriptor_set_layout,
+            bindless_layout: bindless.bindless_pipeline_layout(),
             ubo_params,
-            descriptor_ubo_buffer,
+            ubo_handle,
             _marker: std::marker::PhantomData::<T>,
         }
     }
 
-    fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext, gpu_data: &[T]) {
+    fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext, gpu_data: &T) {
         let render_area = Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: context.fb_size,
@@ -854,10 +815,10 @@ where
         UniqueBufferMapping::new(
             &self.ubo_params,
             &vks.ds,
-            Some(self.ubo_params.item_aligned_size * context.current_frame_id as usize),
-            Some(self.ubo_params.item_aligned_size),
+            Some(size_of::<T>() * context.current_frame_id as usize),
+            Some(size_of::<T>()),
         )
-        .write_data(gpu_data);
+        .write_data(std::slice::from_ref(gpu_data));
 
         unsafe {
             vks.ds.device.cmd_set_viewport(
@@ -883,13 +844,17 @@ where
                 self.pipeline,
             );
 
-            vks.ds.device.cmd_bind_descriptor_sets(
+            let id = BindlessResourceSystem::make_push_constant(
+                context.current_frame_id,
+                self.ubo_handle,
+            );
+
+            vks.ds.device.cmd_push_constants(
                 context.cmd_buff,
-                PipelineBindPoint::GRAPHICS,
-                self.pipeline_layout,
+                self.bindless_layout,
+                ShaderStageFlags::ALL,
                 0,
-                &[self.descriptor_ubo_buffer],
-                &[self.ubo_params.item_aligned_size as u32 * context.current_frame_id as u32],
+                &id.to_le_bytes(),
             );
 
             vks.ds.device.cmd_draw(context.cmd_buff, 3, 1, 0, 0);
@@ -899,32 +864,10 @@ where
     fn create_graphics_pipeline(
         ds: &VulkanDeviceState,
         renderpass: RenderPass,
-    ) -> (Pipeline, PipelineLayout, DescriptorSetLayout) {
-        let descriptor_set_layout = unsafe {
-            ds.device.create_descriptor_set_layout(
-                &DescriptorSetLayoutCreateInfo::builder().bindings(&[
-                    DescriptorSetLayoutBinding::builder()
-                        .binding(0)
-                        .descriptor_count(1)
-                        .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .stage_flags(ShaderStageFlags::FRAGMENT)
-                        .build(),
-                ]),
-                None,
-            )
-        }
-        .expect("Failed to create descriptor set layout");
-
-        let pipeline_layout = unsafe {
-            ds.device.create_pipeline_layout(
-                &PipelineLayoutCreateInfo::builder().set_layouts(&[descriptor_set_layout]),
-                None,
-            )
-        }
-        .expect("Failed to create pipeline layout");
-
+        bindless: &BindlessResourceSystem,
+    ) -> Pipeline {
         let vsm = compile_shader_from_file(T::VERTEX_SHADER_MODULE, &ds.device).unwrap();
-        let fsm = compile_shader_from_file(T::FRAGMENT_SHADER_MODULE, &ds.device).unwrap();
+        let fsm = compile_shader_from_file(T::BINDLESS_FRAGMENT_SHADER_MODULE, &ds.device).unwrap();
 
         use std::ffi::CStr;
         let pipeline = unsafe {
@@ -988,7 +931,7 @@ where
                                 },
                             }]),
                     )
-                    .layout(pipeline_layout)
+                    .layout(bindless.bindless_pipeline_layout())
                     .render_pass(renderpass)
                     .subpass(0)],
                 None,
@@ -996,7 +939,7 @@ where
         }
         .expect("Failed to create graphics pipeline ... ");
 
-        (pipeline[0], pipeline_layout, descriptor_set_layout)
+        pipeline[0]
     }
 }
 

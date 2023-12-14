@@ -1,4 +1,8 @@
-use std::ffi::{c_char, c_void, CString};
+use std::{
+    ffi::{c_char, c_void, CString},
+    io::Read,
+    mem::size_of,
+};
 
 use ash::{
     extensions::ext::DebugUtils,
@@ -9,25 +13,34 @@ use ash::{
         CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
         ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags, DescriptorPool,
-        DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSetLayout,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
-        DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo,
-        Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo, Image,
-        ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers,
-        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags,
-        MemoryPropertyFlags, MemoryRequirements, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceType, Pipeline,
-        PipelineBindPoint, PipelineCache, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineStageFlags, PresentInfoKHR, PresentModeKHR, Queue, RenderPass,
-        RenderPassCreateInfo, SampleCountFlags, Sampler, SamplerCreateInfo, Semaphore,
-        SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo, SharingMode, SubmitInfo,
-        SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR,
+        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags,
+        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateFlags,
+        DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo,
+        DescriptorSetLayout, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
+        DeviceMemory, DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags,
+        FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo,
+        Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
+        ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
+        MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
+        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceMemoryProperties,
+        PhysicalDeviceProperties, PhysicalDeviceType, PhysicalDeviceVulkan12Features, Pipeline,
+        PipelineBindPoint, PipelineCache, PipelineLayout, PipelineLayoutCreateFlags,
+        PipelineLayoutCreateInfo, PipelineStageFlags, PresentInfoKHR, PresentModeKHR,
+        PushConstantRange, Queue, RenderPass, RenderPassCreateInfo, SampleCountFlags, Sampler,
+        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
+        ShaderStageFlags, SharingMode, SubmitInfo, SubpassDescription, SurfaceFormatKHR,
+        SurfaceKHR, SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        WriteDescriptorSet, WHOLE_SIZE,
     },
     Device, Entry, Instance,
 };
+
+#[derive(Copy, Clone, Debug, thiserror::Error)]
+pub enum VulkanSystemError {
+    #[error("vulkan api error")]
+    VulkanResult(#[from] ash::vk::Result),
+}
 
 pub struct UniqueImage {
     device: *const Device,
@@ -234,6 +247,26 @@ impl std::ops::Drop for UniqueShaderModule {
     }
 }
 
+fn shader_include_resolver(
+    req_file: &str,
+    _inc_type: shaderc::IncludeType,
+    src_file: &str,
+    _inc_depth: usize,
+) -> shaderc::IncludeCallbackResult {
+    let path = std::path::Path::new(src_file);
+    let dir = path.parent().unwrap();
+    let include_file_path = dir.join(req_file);
+
+    let mut f = std::fs::File::open(&include_file_path).map_err(|e| e.to_string())?;
+    let mut s = String::new();
+    f.read_to_string(&mut s).map_err(|e| e.to_string())?;
+
+    Ok(shaderc::ResolvedInclude {
+        resolved_name: include_file_path.to_str().unwrap().into(),
+        content: s,
+    })
+}
+
 pub fn compile_shader_from_file<P: AsRef<std::path::Path>>(
     p: P,
     vk_dev: &ash::Device,
@@ -245,6 +278,7 @@ pub fn compile_shader_from_file<P: AsRef<std::path::Path>>(
     compile_options.set_target_env(TargetEnv::Vulkan, EnvVersion::Vulkan1_2 as u32);
     compile_options.set_generate_debug_info();
     compile_options.set_warnings_as_errors();
+    compile_options.set_include_callback(shader_include_resolver);
 
     let shader_type = p
         .as_ref()
@@ -325,32 +359,39 @@ impl UniqueBuffer {
         memory_flags: MemoryPropertyFlags,
         items: usize,
     ) -> Self {
-        let align_size = if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
-            ds.ds
-                .physical
-                .properties
-                .limits
-                .min_uniform_buffer_offset_alignment
-        } else if usage.intersects(
-            BufferUsageFlags::UNIFORM_TEXEL_BUFFER | BufferUsageFlags::STORAGE_TEXEL_BUFFER,
-        ) {
-            ds.ds
-                .physical
-                .properties
-                .limits
-                .min_texel_buffer_offset_alignment
-        } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
-            ds.ds
-                .physical
-                .properties
-                .limits
-                .min_storage_buffer_offset_alignment
-        } else {
+        log::info!("CreateBuffer -> items = {items}");
+        let align_size = if memory_flags.intersects(MemoryPropertyFlags::HOST_VISIBLE)
+            && !memory_flags.intersects(MemoryPropertyFlags::HOST_COHERENT)
+        {
             ds.ds.physical.properties.limits.non_coherent_atom_size
+        } else {
+            if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
+                ds.ds
+                    .physical
+                    .properties
+                    .limits
+                    .min_uniform_buffer_offset_alignment
+            } else if usage.intersects(
+                BufferUsageFlags::UNIFORM_TEXEL_BUFFER | BufferUsageFlags::STORAGE_TEXEL_BUFFER,
+            ) {
+                ds.ds
+                    .physical
+                    .properties
+                    .limits
+                    .min_texel_buffer_offset_alignment
+            } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
+                ds.ds
+                    .physical
+                    .properties
+                    .limits
+                    .min_storage_buffer_offset_alignment
+            } else {
+                ds.ds.physical.properties.limits.non_coherent_atom_size
+            }
         } as usize;
 
-        let item_aligned_size = round_up(std::mem::size_of::<T>(), align_size);
-        let size = item_aligned_size * items;
+        // let item_aligned_size = round_up(std::mem::size_of::<T>(), align_size);
+        let size = round_up(std::mem::size_of::<T>() * items, align_size);
 
         let buffer = unsafe {
             ds.ds.device.create_buffer(
@@ -394,24 +435,28 @@ impl UniqueBuffer {
             device: &ds.ds.device as *const _,
             handle: buffer,
             memory: buffer_memory,
-            item_aligned_size,
+            item_aligned_size: align_size,
         }
     }
 }
 
 fn round_up(num_to_round: usize, multiple: usize) -> usize {
     assert_ne!(multiple, 0);
-    ((num_to_round + multiple - 1) / multiple) * multiple
+    if num_to_round == 0 {
+        0
+    } else {
+        // ((num_to_round + multiple - 1) / multiple) * multiple
+        ((num_to_round - 1) / multiple + 1) * multiple
+    }
 }
 
 pub struct UniqueBufferMapping<'a> {
-    buffer: Buffer,
     buffer_mem: DeviceMemory,
     mapped_memory: *mut c_void,
     offset: usize,
-    size: usize,
-    alignment: usize,
     device: &'a Device,
+    range_start: usize,
+    range_size: usize,
 }
 
 impl<'a> UniqueBufferMapping<'a> {
@@ -421,50 +466,49 @@ impl<'a> UniqueBufferMapping<'a> {
         offset: Option<usize>,
         size: Option<usize>,
     ) -> Self {
-        let offset = offset.unwrap_or_default();
-        if offset != 0 && size.is_none() {
-            log::error!(
-                "When mapping a buffer and specifying an offset a size must also be provided"
-            );
-            panic!("blyat!!");
-        }
+        let round_down = |x: usize, m: usize| (x / m) * m;
 
-        let size = size.unwrap_or(ash::vk::WHOLE_SIZE as usize);
+        let offset = offset.unwrap_or_default();
+        let range_start = round_down(offset, buf.item_aligned_size);
+
+        assert!(offset >= range_start);
+
+        let range_size = size
+            .map(|s| round_up(s, buf.item_aligned_size))
+            .unwrap_or(ash::vk::WHOLE_SIZE as usize);
 
         let mapped_memory = unsafe {
             ds.device.map_memory(
                 buf.memory,
-                offset as u64,
-                size as u64,
+                range_start as u64,
+                range_size as u64,
                 MemoryMapFlags::empty(),
             )
         }
         .expect("Failed to map memory");
 
         Self {
-            buffer: buf.handle,
             buffer_mem: buf.memory,
             mapped_memory,
             device: &ds.device,
-            offset,
-            alignment: buf.item_aligned_size,
-            size,
+            offset: offset - range_start,
+            range_start,
+            range_size,
         }
     }
 
     pub fn write_data<T: Sized + Copy>(&mut self, data: &[T]) {
         unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), self.mapped_memory as *mut T, data.len());
+            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
         }
     }
 
     pub fn write_data_with_offset<T: Sized + Copy>(&mut self, data: &[T], offset: isize) {
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                (self.mapped_memory as *mut T).offset(offset),
-                data.len(),
-            );
+            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
+            let dst = (dst as *mut T).offset(offset);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
         }
     }
 }
@@ -475,8 +519,8 @@ impl<'a> std::ops::Drop for UniqueBufferMapping<'a> {
             self.device
                 .flush_mapped_memory_ranges(&[*MappedMemoryRange::builder()
                     .memory(self.buffer_mem)
-                    .offset(self.offset as DeviceSize)
-                    .size(self.size as DeviceSize)])
+                    .offset(self.range_start as DeviceSize)
+                    .size(self.range_size as DeviceSize)])
                 .expect("Failed to flush mapped memory ...");
 
             self.device.unmap_memory(self.buffer_mem);
@@ -531,6 +575,14 @@ pub struct VulkanState {
 }
 
 impl VulkanState {
+    pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
+        &self.ds.physical.properties.limits
+    }
+
+    pub fn features(&self) -> &PhysicalDeviceFeatures {
+        &self.ds.physical.features
+    }
+
     pub fn wait_all_idle(&mut self) {
         unsafe {
             self.ds
@@ -673,6 +725,7 @@ pub struct VulkanPhysicalDeviceState {
     pub properties: PhysicalDeviceProperties,
     pub memory_properties: PhysicalDeviceMemoryProperties,
     pub features: PhysicalDeviceFeatures,
+    pub vk12_features: PhysicalDeviceVulkan12Features,
     pub queue_family_id: u32,
 }
 
@@ -977,11 +1030,28 @@ impl VulkanState {
                 continue;
             }
 
+            let mut feat_vk12 = ash::vk::PhysicalDeviceVulkan12Features::default();
+            let mut pdf2 = ash::vk::PhysicalDeviceFeatures2::builder().push_next(&mut feat_vk12);
+            unsafe {
+                instance.get_physical_device_features2(pd, &mut pdf2);
+            }
+
             let pd_features = unsafe { instance.get_physical_device_features(pd) };
 
             if pd_features.multi_draw_indirect == 0 || !pd_features.geometry_shader == 0 {
                 log::info!(
                     "Rejecting device {} (no geometry shader and/or MultiDrawIndirect)",
+                    pd_properties.device_id
+                );
+                continue;
+            }
+
+            if feat_vk12.descriptor_binding_partially_bound == 0
+                || feat_vk12.descriptor_indexing == 0
+                || feat_vk12.draw_indirect_count == 0
+            {
+                log::info!(
+                    "Rejecting device {} (no descriptor partially bound/descriptor indexing/draw indirect count)",
                     pd_properties.device_id
                 );
                 continue;
@@ -1122,6 +1192,7 @@ impl VulkanState {
                 features: pd_features,
                 queue_family_id: queue_id,
                 memory_properties,
+                vk12_features: feat_vk12,
             });
 
             break;
@@ -1137,10 +1208,12 @@ impl VulkanState {
         //
         // create logical device
         let enabled_device_extensions = [b"VK_KHR_swapchain\0".as_ptr() as *const c_char];
+        let mut vk12enabled = phys_device.vk12_features;
         let device = unsafe {
             instance.create_device(
                 phys_device.device,
                 &DeviceCreateInfo::builder()
+                    .push_next(&mut vk12enabled)
                     .enabled_extension_names(&enabled_device_extensions)
                     .queue_create_infos(&[DeviceQueueCreateInfo::builder()
                         .queue_family_index(phys_device.queue_family_id)
@@ -1477,4 +1550,203 @@ pub struct FrameRenderContext {
     pub framebuffer: Framebuffer,
     pub fb_size: Extent2D,
     pub current_frame_id: u32,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[repr(u8)]
+pub enum BindlessResourceType {
+    Ssbo,
+    CombinedImageSampler,
+}
+
+impl BindlessResourceType {
+    fn as_vk_type(&self) -> ash::vk::DescriptorType {
+        match self {
+            BindlessResourceType::Ssbo => DescriptorType::STORAGE_BUFFER,
+            BindlessResourceType::CombinedImageSampler => DescriptorType::COMBINED_IMAGE_SAMPLER,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BindlessResourceHandle(u32);
+
+impl BindlessResourceHandle {
+    pub fn get_type(&self) -> BindlessResourceType {
+        let bits = self.0 & 0b11;
+        match bits {
+            0 => BindlessResourceType::Ssbo,
+            1 => BindlessResourceType::CombinedImageSampler,
+            _ => todo!("Handle this"),
+        }
+    }
+
+    pub fn get_id(&self) -> u32 {
+        self.0 >> 2
+    }
+
+    pub fn new(ty: BindlessResourceType, id: u32) -> Self {
+        match ty {
+            BindlessResourceType::Ssbo => Self(id << 2),
+            BindlessResourceType::CombinedImageSampler => Self(1 | (id << 2)),
+        }
+    }
+}
+
+pub struct BindlessResourceSystem {
+    dpool: DescriptorPool,
+    set_layouts: Vec<DescriptorSetLayout>,
+    descriptor_sets: Vec<DescriptorSet>,
+    ssbos: Vec<BindlessResourceHandle>,
+    samplers: Vec<BindlessResourceHandle>,
+    bindless_pipeline_layout: PipelineLayout,
+}
+
+impl BindlessResourceSystem {
+    pub fn descriptor_sets(&self) -> &[DescriptorSet] {
+        &self.descriptor_sets
+    }
+    pub fn bindless_pipeline_layout(&self) -> PipelineLayout {
+        self.bindless_pipeline_layout
+    }
+
+    pub fn make_push_constant(frame: u32, resource: BindlessResourceHandle) -> u32 {
+        let res_id = resource.get_id();
+        frame << 16 | res_id & 0xFFFF
+    }
+
+    pub fn new(vks: &VulkanState) -> Self {
+        let dpool_sizes = [
+            *DescriptorPoolSize::builder()
+                .ty(DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1024),
+            *DescriptorPoolSize::builder()
+                .ty(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .descriptor_count(1024),
+        ];
+
+        let dpool = unsafe {
+            vks.ds.device.create_descriptor_pool(
+                &*DescriptorPoolCreateInfo::builder()
+                    .flags(ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+                    .pool_sizes(&dpool_sizes)
+                    .max_sets(8),
+                None,
+            )
+        }
+        .expect("Failed to create bindless dpool");
+
+        use enum_iterator::all;
+
+        let set_layouts = all::<BindlessResourceType>()
+            .map(|res_type| {
+                unsafe {
+                    let mut flag_info =
+                        *ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
+                            .binding_flags(&[ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND]);
+
+                    vks.ds.device.create_descriptor_set_layout(
+                        &DescriptorSetLayoutCreateInfo::builder()
+                            .push_next(&mut flag_info)
+                            .flags(ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
+                            .bindings(&[*ash::vk::DescriptorSetLayoutBinding::builder()
+                                .descriptor_count(1024)
+                                .binding(0)
+                                .descriptor_type(res_type.as_vk_type())
+                                .stage_flags(ash::vk::ShaderStageFlags::ALL)]),
+                        None,
+                    )
+                }
+                .expect("Failed to create layout")
+            })
+            .collect::<Vec<_>>();
+
+        let descriptor_sets = unsafe {
+            vks.ds.device.allocate_descriptor_sets(
+                &DescriptorSetAllocateInfo::builder()
+                    .descriptor_pool(dpool)
+                    .set_layouts(&set_layouts),
+            )
+        }
+        .expect("Failed to allocate bindless descriptor sets");
+
+        let bindless_pipeline_layout = unsafe {
+            vks.ds.device.create_pipeline_layout(
+                &PipelineLayoutCreateInfo::builder()
+                    .set_layouts(&set_layouts)
+                    .push_constant_ranges(&[*PushConstantRange::builder()
+                        .stage_flags(ShaderStageFlags::ALL)
+                        .offset(0)
+                        .size(size_of::<u32>() as _)]),
+                None,
+            )
+        }
+        .expect("Failed to create bindless pipeline layout");
+
+        Self {
+            dpool,
+            set_layouts,
+            descriptor_sets,
+            ssbos: vec![],
+            samplers: vec![],
+            bindless_pipeline_layout,
+        }
+    }
+
+    pub fn register_ssbo(
+        &mut self,
+        vks: &VulkanDeviceState,
+        ssbo: &UniqueBuffer,
+    ) -> BindlessResourceHandle {
+        let idx = self.ssbos.len() as u32;
+        let handle = BindlessResourceHandle::new(BindlessResourceType::Ssbo, idx);
+        self.ssbos.push(handle);
+
+        unsafe {
+            let buf_info = *DescriptorBufferInfo::builder()
+                .buffer(ssbo.handle)
+                .range(WHOLE_SIZE)
+                .offset(0);
+            let write = *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
+                .dst_binding(0)
+                .dst_array_element(idx)
+                .descriptor_type(DescriptorType::STORAGE_BUFFER)
+                .buffer_info(std::slice::from_ref(&buf_info));
+
+            vks.device
+                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+
+        handle
+    }
+
+    pub fn register_image(
+        &mut self,
+        vks: &VulkanDeviceState,
+        imgview: &UniqueImageView,
+        sampler: &UniqueSampler,
+    ) -> BindlessResourceHandle {
+        let idx = self.samplers.len() as u32;
+        let handle = BindlessResourceHandle::new(BindlessResourceType::CombinedImageSampler, idx);
+        self.samplers.push(handle);
+
+        unsafe {
+            let img_info = *DescriptorImageInfo::builder()
+                .image_view(imgview.view)
+                .sampler(sampler.handle)
+                .image_layout(ImageLayout::READ_ONLY_OPTIMAL);
+            let write = *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::CombinedImageSampler as usize])
+                .dst_binding(0)
+                .dst_array_element(idx)
+                .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(std::slice::from_ref(&img_info));
+
+            vks.device
+                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+
+        handle
+    }
 }

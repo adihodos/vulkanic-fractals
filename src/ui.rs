@@ -2,22 +2,19 @@ use std::{cmp::Ordering, ffi::CStr, mem::size_of};
 
 use ash::vk::{
     BlendFactor, BlendOp, BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentMapping,
-    ComponentSwizzle, CullModeFlags, DescriptorBufferInfo, DescriptorImageInfo, DescriptorSet,
-    DescriptorSetAllocateInfo, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
-    DescriptorType, DeviceSize, DynamicState, Extent2D, Extent3D, Filter, FrontFace,
-    GraphicsPipelineCreateInfo, Handle, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
-    ImageLayout, ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags,
-    ImageViewCreateInfo, ImageViewType, MemoryPropertyFlags, Offset2D, PipelineBindPoint,
+    ComponentSwizzle, CullModeFlags, DeviceSize, DynamicState, Extent2D, Extent3D, Filter,
+    FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
+    ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo,
+    ImageViewType, MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineCache,
     PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo,
+    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
     PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
     PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
     PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, SampleCountFlags,
     SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
     VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, Viewport,
-    WriteDescriptorSet,
 };
-use imgui::{self, BackendFlags, FontConfig, Io, Key};
+use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, Io, Key};
 use imgui::{DrawCmd, FontSource};
 
 use winit::{
@@ -29,10 +26,9 @@ use winit::{
     window::{CursorIcon as MouseCursor, Window},
 };
 
+use crate::vulkan_renderer::{BindlessResourceHandle, BindlessResourceSystem};
 use crate::{
-    vulkan_renderer::{
-        compile_shader_from_file, UniqueImage, UniqueImageView, UniquePipeline, UniqueSampler,
-    },
+    vulkan_renderer::{compile_shader_from_file, UniqueImage, UniqueImageView, UniqueSampler},
     FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanState,
 };
 
@@ -244,26 +240,23 @@ fn to_imgui_key(keycode: VirtualKeyCode) -> Option<Key> {
 }
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C)]
-struct VertexShaderUniforms {
+#[repr(C, align(16))]
+struct UiBackendParams {
     transform: [f32; 16],
+    font_atlas_id: u32,
 }
-
-// #[derive(Copy, Clone, Debug)]
-// struct Vec2i32 {
-//     x: i32,
-//     y: i32,
-// }
 
 struct UiRenderState {
     vertex_buffer: UniqueBuffer,
     index_buffer: UniqueBuffer,
     ubo_vs: UniqueBuffer,
+    ubo_handle: BindlessResourceHandle,
     font_atlas_img: UniqueImage,
     font_atlas_img_view: UniqueImageView,
+    atlas_handle: BindlessResourceHandle,
     sampler: UniqueSampler,
-    pipeline: UniquePipeline,
-    descriptor_sets: Vec<DescriptorSet>,
+    pipeline: ash::vk::Pipeline,
+    bindless_layout: PipelineLayout,
 }
 
 pub struct UiBackend {
@@ -332,6 +325,7 @@ impl UiBackend {
     pub fn new(
         window: &winit::window::Window,
         vks: &mut VulkanState,
+        bindless_sys: &mut BindlessResourceSystem,
         hidpi_mode: HiDpiMode,
     ) -> UiBackend {
         let mut imgui = init_imgui();
@@ -363,12 +357,14 @@ impl UiBackend {
             (Self::MAX_INDICES * vks.swapchain.max_frames) as usize,
         );
 
-        let ubo_vs = UniqueBuffer::new::<VertexShaderUniforms>(
+        let ubo_vs = UniqueBuffer::new::<UiBackendParams>(
             vks,
-            BufferUsageFlags::UNIFORM_BUFFER,
+            BufferUsageFlags::STORAGE_BUFFER,
             MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
             vks.swapchain.max_frames as usize,
         );
+
+        let ubo_handle = bindless_sys.register_ssbo(&vks.ds, &ubo_vs);
 
         let font_files = [
             "data/fonts/iosevka-ss03-regular.ttf",
@@ -452,44 +448,12 @@ impl UiBackend {
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
         );
 
-        let pipeline = Self::create_graphics_pipeline(vks);
+        let atlas_handle = bindless_sys.register_image(&vks.ds, &font_atlas_img_view, &sampler);
 
-        let descriptor_sets = unsafe {
-            vks.ds.device.allocate_descriptor_sets(
-                &DescriptorSetAllocateInfo::builder()
-                    .descriptor_pool(vks.ds.descriptor_pool)
-                    .set_layouts(&pipeline.descriptor_set_layout),
-            )
-        }
-        .expect("Failed to allocate descriptor sets");
+        let pipeline = Self::create_graphics_pipeline(vks, bindless_sys);
 
-        unsafe {
-            vks.ds.device.update_descriptor_sets(
-                &[
-                    *WriteDescriptorSet::builder()
-                        .dst_set(descriptor_sets[0])
-                        .dst_binding(0)
-                        .dst_array_element(0)
-                        .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .buffer_info(&[*DescriptorBufferInfo::builder()
-                            .buffer(ubo_vs.handle)
-                            .offset(0)
-                            .range(ubo_vs.item_aligned_size as DeviceSize)]),
-                    *WriteDescriptorSet::builder()
-                        .dst_set(descriptor_sets[0])
-                        .dst_binding(1)
-                        .dst_array_element(0)
-                        .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                        .image_info(&[*DescriptorImageInfo::builder()
-                            .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                            .image_view(font_atlas_img_view.view)
-                            .sampler(sampler.handle)]),
-                ],
-                &[],
-            );
-        }
-
-        imgui.fonts().tex_id = imgui::TextureId::new(descriptor_sets[0].as_raw() as usize);
+        // TODO: first ur mom, then fix this
+        // imgui.fonts().tex_id = imgui::TextureId::new(descriptor_sets[0].as_raw() as usize);
 
         UiBackend {
             imgui,
@@ -498,11 +462,13 @@ impl UiBackend {
                 vertex_buffer,
                 index_buffer,
                 ubo_vs,
+                ubo_handle,
                 font_atlas_img,
                 font_atlas_img_view,
+                atlas_handle,
                 sampler,
                 pipeline,
-                descriptor_sets,
+                bindless_layout: bindless_sys.bindless_pipeline_layout(),
             },
 
             platform,
@@ -722,10 +688,8 @@ impl UiBackend {
             return;
         }
 
-        let buf_size_one_frame =
-            self.rs.vertex_buffer.item_aligned_size * Self::MAX_VERTICES as usize;
-        let index_buf_size_one_frame =
-            self.rs.index_buffer.item_aligned_size * Self::MAX_INDICES as usize;
+        let buf_size_one_frame = size_of::<DrawVert>() * Self::MAX_VERTICES as usize;
+        let index_buf_size_one_frame = size_of::<DrawIdx>() * Self::MAX_INDICES as usize;
 
         //
         // Push vertices + indices 2 GPU
@@ -765,7 +729,7 @@ impl UiBackend {
             graphics_device.cmd_bind_pipeline(
                 frame_context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
-                self.rs.pipeline.handle,
+                self.rs.pipeline,
             );
 
             graphics_device.cmd_bind_vertex_buffers(
@@ -806,7 +770,9 @@ impl UiBackend {
                 -1f32 - draw_data.display_pos[1] * scale[1],
             ];
 
-            let transform = VertexShaderUniforms {
+            let atlas_id = self.rs.atlas_handle.get_id();
+
+            let transform = UiBackendParams {
                 transform: [
                     scale[0],
                     0.0f32,
@@ -825,25 +791,32 @@ impl UiBackend {
                     0.0f32,
                     1.0f32,
                 ],
+                font_atlas_id: atlas_id,
+                // _pad: [0u32; 3],
             };
 
             //
             // push transform
+
             UniqueBufferMapping::new(
                 &self.rs.ubo_vs,
                 &vks.ds,
-                Some(self.rs.ubo_vs.item_aligned_size * frame_context.current_frame_id as usize),
-                Some(self.rs.ubo_vs.item_aligned_size),
+                Some(size_of::<UiBackendParams>() * frame_context.current_frame_id as usize),
+                Some(size_of::<UiBackendParams>()),
             )
-            .write_data(&[transform]);
+            .write_data(std::slice::from_ref(&transform));
 
-            graphics_device.cmd_bind_descriptor_sets(
+            let id = BindlessResourceSystem::make_push_constant(
+                frame_context.current_frame_id,
+                self.rs.ubo_handle,
+            );
+
+            vks.ds.device.cmd_push_constants(
                 frame_context.cmd_buff,
-                PipelineBindPoint::GRAPHICS,
-                self.rs.pipeline.layout,
+                self.rs.bindless_layout,
+                ShaderStageFlags::ALL,
                 0,
-                &self.rs.descriptor_sets,
-                &[self.rs.ubo_vs.item_aligned_size as u32 * frame_context.current_frame_id],
+                &id.to_le_bytes(),
             );
 
             //
@@ -926,9 +899,14 @@ impl UiBackend {
         }
     }
 
-    fn create_graphics_pipeline(vks: &VulkanState) -> UniquePipeline {
-        let vsm = compile_shader_from_file("data/shaders/ui.vert", &vks.ds.device).unwrap();
-        let fsm = compile_shader_from_file("data/shaders/ui.frag", &vks.ds.device).unwrap();
+    fn create_graphics_pipeline(
+        vks: &VulkanState,
+        bindless_sys: &BindlessResourceSystem,
+    ) -> ash::vk::Pipeline {
+        let vsm =
+            compile_shader_from_file("data/shaders/ui.bindless.vert", &vks.ds.device).unwrap();
+        let fsm =
+            compile_shader_from_file("data/shaders/ui.bindless.frag", &vks.ds.device).unwrap();
 
         let pipeline_create_info = *GraphicsPipelineCreateInfo::builder()
             .input_assembly_state(
@@ -1015,24 +993,19 @@ impl UiBackend {
                     .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
             )
             .render_pass(vks.renderpass)
+            .layout(bindless_sys.bindless_pipeline_layout())
             .subpass(0);
 
-        UniquePipeline::new(
-            vks,
-            &[*DescriptorSetLayoutCreateInfo::builder().bindings(&[
-                *DescriptorSetLayoutBinding::builder()
-                    .binding(0)
-                    .descriptor_count(1)
-                    .descriptor_type(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                    .stage_flags(ShaderStageFlags::VERTEX),
-                *DescriptorSetLayoutBinding::builder()
-                    .binding(1)
-                    .descriptor_count(1)
-                    .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                    .stage_flags(ShaderStageFlags::FRAGMENT),
-            ])],
-            pipeline_create_info,
-        )
+        let pipeline = unsafe {
+            vks.ds.device.create_graphics_pipelines(
+                PipelineCache::null(),
+                std::slice::from_ref(&pipeline_create_info),
+                None,
+            )
+        }
+        .expect("Failed to create UI graphics pipeline");
+
+        pipeline[0]
     }
 }
 

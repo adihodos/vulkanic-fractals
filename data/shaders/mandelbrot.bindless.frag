@@ -1,5 +1,7 @@
 #version 460 core
 
+#include "bindless.common.glsl"
+
 layout (location = 0) out vec4 FragColor;
 
 const uint COLORING_BASIC = 0;
@@ -9,45 +11,8 @@ const uint COLORING_HSV = 3;
 const uint COLORING_RAINBOW = 4;
 const uint COLORING_PALETTE = 5;
 
-struct FractalParams {
-    uint screen_width;
-    uint screen_height;
-    uint iterations;
-    float zoom;
-    float ox;
-    float oy;
-    uint coloring;
-    float fxmin;
-    float fxmax;
-    float fymin;
-    float fymax;
-    uint escape_radius;
-    float cx;
-    float cy;
-    uint iteration_type;
-  };
-
-layout (std=430, set = 0, binding = 0) readonly buffer GlobalFractalBuffer {
-  FractalParams data[];
-  } g_FractalParams[];
-
-layout (std140, set = 0, binding = 0) uniform FractalParams {
-    uint screen_width;
-    uint screen_height;
-    uint iterations;
-    float zoom;
-    float ox;
-    float oy;
-    uint coloring;
-    float fxmin;
-    float fxmax;
-    float fymin;
-    float fymax;
-    uint escape_radius;
-    float cx;
-    float cy;
-    uint iteration_type;
-} params;
+const uint M_TYPE_STANDARD = 0;
+const uint M_TYPE_BURNING_SHIP = 1;
 
 struct Complex {
     float re;
@@ -95,30 +60,18 @@ Complex complex_mul_scalar(in float a, in Complex b) {
     );
 }
 
-Complex complex_sine(in Complex c) {
-    return Complex(
-        sin(c.re) * cosh(c.im),
-        cos(c.re) * sinh(c.im)
-    );
-}
-
-Complex complex_cosine(in Complex c) {
-    return Complex(
-        cos(c.re) * cosh(c.im),
-        -sin(c.re) * sinh(c.im)
-    );
-}
-
 Complex screen_coords_to_complex_coords(
     in float px,
     in float py,
     in float dxmin,
     in float dxmax,
     in float dymin,
-    in float dymax
+    in float dymax,
+    in float sw,
+    in float sh
 ) {
-    const float x = (px / params.screen_width) * (dxmax - dxmin) + dxmin;
-    const float y = (py / params.screen_height) * (dymax - dymin) + dymin;
+    const float x = (px / sw) * (dxmax - dxmin) + dxmin;
+    const float y = (py / sh) * (dymax - dymin) + dymin;
 
     return Complex(x, y);
 }
@@ -242,140 +195,95 @@ vec3 color_palette(in float n, in float max_iterations) {
    return palette(n, a, b, c, d);
 }
 
-const uint J_ITERATION_QUADRATIC = 0;
-const uint J_ITERATION_SINE = 1;
-const uint J_ITERATION_COSINE = 2;
-const uint J_ITERATION_CUBIC = 3;
-
-float julia_quadratic(in Complex z, in Complex c) {
+float mandelbrot_standard(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
     uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
 
-    while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
+    while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
         z = complex_add(complex_mul(z, z), c);
         iterations += 1;
-        smooth_color += exp(-complex_mag(z));
     }
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_add(complex_mul(z, z), c);
-        smooth_color += exp(-complex_mag(z));
-    }
+    z = complex_add(complex_mul(z, z), c);
+    iterations += 1;    // a couple of extra iterations helps
+    z = complex_add(complex_mul(z, z), c);
+    iterations += 1;    // a couple of extra iterations helps
+    float modulus = complex_mag(z);
+    float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
 
-    return smooth_color;
+    return mu;
 }
 
-float julia_cubic(in Complex z, in Complex c) {
+float mandelbrot_burning_ship(in Complex z, in Complex c, in uint max_iterations) {
     uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
 
-    while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
-        z = complex_add(complex_mul(complex_mul(z, z), z), c);
+    while (complex_mag_squared(z) <= 10.0 && iterations < max_iterations) {
+        const float re = z.re * z.re - z.im * z.im - c.re;
+        const float im = 2.0 * abs(z.re * z.im) - c.im;
+        z = Complex(re, im);
         iterations += 1;
-        smooth_color += exp(-complex_mag(z));
     }
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_add(complex_mul(complex_mul(z, z), z), c);
-        smooth_color += exp(-complex_mag(z));
-    }
+    float modulus = complex_mag(z);
+    float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
 
-    return smooth_color;
+    return mu;
 }
 
+void main() { 
+  const uvec2 offset = GetBufferAndOffset(g_UniqueResourceId.id);
+  const MandelbrotFractalParams params = g_MandelbrotFractalParams[nonuniformEXT(offset.x)].p[nonuniformEXT(offset.y)];
 
-float julia_cosine(in Complex z, in Complex c) {
-    uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
+  const Complex c = screen_coords_to_complex_coords(
+						    gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
+						    );
 
-    while (abs(z.im) < 50.0 && (iterations < params.iterations)) {
-        z = complex_mul(c, complex_cosine(z));
-        iterations += 1;
-        smooth_color += exp(-complex_mag(z));
-    }
+  Complex z = Complex(0.0, 0.0);
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_mul(c, complex_cosine(z));
-        smooth_color += exp(-complex_mag(z));
-    }
+  float mu = 0.0;
 
-    return smooth_color;
-}
+  switch (params.ftype) {
+  case M_TYPE_STANDARD:
+    mu = mandelbrot_standard(z, c, params.escape_radius, params.iterations);
+    break;
 
-float julia_sine(in Complex z, in Complex c) {
-    uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
+  case M_TYPE_BURNING_SHIP:
+    mu = mandelbrot_burning_ship(z, c, params.iterations);
+    break;
 
-    while (abs(z.im) < 50.0 && (iterations < params.iterations)) {
-        z = complex_mul(c, complex_sine(z));
-        iterations += 1;
-        smooth_color += exp(-complex_mag(z));
-    }
+  default:
+    break;
+  }
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_mul(c, complex_sine(z));
-        smooth_color += exp(-complex_mag(z));
-    }
+  float mu2 = mu;
+  mu = sqrt(mu / params.iterations);
 
-    return smooth_color;
-}
+  vec3 color = vec3(0.0);
 
-void main() {
-    const Complex c = Complex(params.cx, params.cy);
-    Complex z = screen_coords_to_complex_coords(
-        gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax
-    );
+  switch (params.coloring) {
+  case COLORING_SMOOTH:
+    color = color_smooth(mu, params.iterations);
+    break;
 
-    float smoothing = 0.0;
-    switch (params.iteration_type) {
-        case J_ITERATION_SINE:
-            smoothing = julia_sine(z, c);
-            break;
+  case COLORING_LOG:
+    color = color_log(mu2, params.iterations);
+    break;
 
-        case J_ITERATION_COSINE:
-            smoothing = julia_cosine(z, c);
-            break;
+  case COLORING_HSV:
+    color = color_hsv(mu, params.iterations);
+    break;
 
-        case J_ITERATION_CUBIC:
-            smoothing = julia_cubic(z, c);
-            break;
+  case COLORING_RAINBOW:
+    color = color_rainbow(mu, params.iterations);
+    break;
 
-        default:
-        case J_ITERATION_QUADRATIC:
-            smoothing = julia_quadratic(z, c);
-            break;
-    }
+  case COLORING_BASIC: default:
+    color = color_simple(mu, params.iterations);
+    break;
 
-    const float smoothing_factor = (smoothing / params.iterations);
+  case COLORING_PALETTE:
+    color = color_palette(mu, params.iterations);
+    break;
+  }
 
-    vec3 color = vec3(0.0);
-
-    switch (params.coloring) {
-        case COLORING_SMOOTH:
-            color = color_smooth(smoothing_factor, params.iterations);
-            break;
-
-        case COLORING_LOG:
-            color = color_log(smoothing, params.iterations);
-            break;
-
-        case COLORING_HSV:
-            color = color_hsv(smoothing_factor, params.iterations);
-            break;
-
-        case COLORING_RAINBOW:
-            color = color_rainbow(smoothing_factor, params.iterations);
-            break;
-
-        case COLORING_BASIC: default:
-            color = color_simple(smoothing_factor, params.iterations);
-            break;
-
-        case COLORING_PALETTE:
-            color = color_palette(smoothing_factor, params.iterations);
-            break;
-
-    }
-
-    FragColor = vec4(color, 1.0);
+  FragColor = vec4(color, 1.0);
 }

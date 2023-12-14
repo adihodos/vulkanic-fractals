@@ -1,10 +1,13 @@
 use ash::vk::{
-    ClearColorValue, ClearValue, Offset2D, Rect2D, RenderPassBeginInfo, SubpassContents,
+    ClearColorValue, ClearValue, Offset2D, PipelineBindPoint, Rect2D, RenderPassBeginInfo,
+    SubpassContents,
 };
 
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
-use vulkan_renderer::{FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanState};
+use vulkan_renderer::{
+    BindlessResourceSystem, FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanState,
+};
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -87,6 +90,7 @@ struct FractalSimulation {
     control_down: bool,
     cursor_pos: (f32, f32),
     vks: std::pin::Pin<Box<VulkanState>>,
+    bindless_sys: BindlessResourceSystem,
 }
 
 impl FractalSimulation {
@@ -105,11 +109,16 @@ impl FractalSimulation {
         log::info!("Cursor initial position {:?}", cursor_pos);
 
         let mut vks = Box::pin(VulkanState::new(wsi).expect("Failed to initialize vulkan ..."));
+        log::info!("### Device limits:\n{:?}", vks.limits());
+        log::info!("### Device features:\n{:?}", vks.features());
+
         vks.begin_resource_loading();
 
-        let ui = UiBackend::new(window, &mut vks, ui::HiDpiMode::Default);
-        let mandelbrot = Mandelbrot::new(&vks);
-        let julia = Julia::new(&vks);
+        let mut bindless_sys = BindlessResourceSystem::new(&vks);
+
+        let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default);
+        let mandelbrot = Mandelbrot::new(&vks, &mut bindless_sys);
+        let julia = Julia::new(&vks, &mut bindless_sys);
 
         vks.end_resource_loading();
 
@@ -122,6 +131,7 @@ impl FractalSimulation {
             cursor_pos,
             vks,
             ui,
+            bindless_sys,
         }
     }
 
@@ -147,6 +157,15 @@ impl FractalSimulation {
                         },
                     }]),
                 SubpassContents::INLINE,
+            );
+
+            self.vks.ds.device.cmd_bind_descriptor_sets(
+                frame_context.cmd_buff,
+                PipelineBindPoint::GRAPHICS,
+                self.bindless_sys.bindless_pipeline_layout(),
+                0,
+                self.bindless_sys.descriptor_sets(),
+                &[],
             );
         }
 

@@ -1,5 +1,7 @@
 #version 460 core
 
+#include "bindless.common.glsl"
+
 layout (location = 0) out vec4 FragColor;
 
 const uint COLORING_BASIC = 0;
@@ -8,46 +10,6 @@ const uint COLORING_LOG = 2;
 const uint COLORING_HSV = 3;
 const uint COLORING_RAINBOW = 4;
 const uint COLORING_PALETTE = 5;
-
-struct FractalParams {
-    uint screen_width;
-    uint screen_height;
-    uint iterations;
-    float zoom;
-    float ox;
-    float oy;
-    uint coloring;
-    float fxmin;
-    float fxmax;
-    float fymin;
-    float fymax;
-    uint escape_radius;
-    float cx;
-    float cy;
-    uint iteration_type;
-  };
-
-layout (std=430, set = 0, binding = 0) readonly buffer GlobalFractalBuffer {
-  FractalParams data[];
-  } g_FractalParams[];
-
-layout (std140, set = 0, binding = 0) uniform FractalParams {
-    uint screen_width;
-    uint screen_height;
-    uint iterations;
-    float zoom;
-    float ox;
-    float oy;
-    uint coloring;
-    float fxmin;
-    float fxmax;
-    float fymin;
-    float fymax;
-    uint escape_radius;
-    float cx;
-    float cy;
-    uint iteration_type;
-} params;
 
 struct Complex {
     float re;
@@ -115,10 +77,12 @@ Complex screen_coords_to_complex_coords(
     in float dxmin,
     in float dxmax,
     in float dymin,
-    in float dymax
+    in float dymax,
+    in float sw,
+    in float sh
 ) {
-    const float x = (px / params.screen_width) * (dxmax - dxmin) + dxmin;
-    const float y = (py / params.screen_height) * (dymax - dymin) + dymin;
+    const float x = (px / sw) * (dxmax - dxmin) + dxmin;
+    const float y = (py / sh) * (dymax - dymin) + dymin;
 
     return Complex(x, y);
 }
@@ -247,11 +211,11 @@ const uint J_ITERATION_SINE = 1;
 const uint J_ITERATION_COSINE = 2;
 const uint J_ITERATION_CUBIC = 3;
 
-float julia_quadratic(in Complex z, in Complex c) {
+float julia_quadratic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
     uint iterations = 0;
     float smooth_color = exp(-complex_mag(z));
 
-    while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
+    while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
         z = complex_add(complex_mul(z, z), c);
         iterations += 1;
         smooth_color += exp(-complex_mag(z));
@@ -265,11 +229,11 @@ float julia_quadratic(in Complex z, in Complex c) {
     return smooth_color;
 }
 
-float julia_cubic(in Complex z, in Complex c) {
+float julia_cubic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
     uint iterations = 0;
     float smooth_color = exp(-complex_mag(z));
 
-    while ((complex_mag_squared(z) <= (params.escape_radius * params.escape_radius)) && (iterations < params.iterations)) {
+    while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
         z = complex_add(complex_mul(complex_mul(z, z), z), c);
         iterations += 1;
         smooth_color += exp(-complex_mag(z));
@@ -284,11 +248,11 @@ float julia_cubic(in Complex z, in Complex c) {
 }
 
 
-float julia_cosine(in Complex z, in Complex c) {
+float julia_cosine(in Complex z, in Complex c, in uint max_iterations) {
     uint iterations = 0;
     float smooth_color = exp(-complex_mag(z));
 
-    while (abs(z.im) < 50.0 && (iterations < params.iterations)) {
+    while (abs(z.im) < 50.0 && (iterations < max_iterations)) {
         z = complex_mul(c, complex_cosine(z));
         iterations += 1;
         smooth_color += exp(-complex_mag(z));
@@ -302,11 +266,11 @@ float julia_cosine(in Complex z, in Complex c) {
     return smooth_color;
 }
 
-float julia_sine(in Complex z, in Complex c) {
+float julia_sine(in Complex z, in Complex c, in uint max_iterations) {
     uint iterations = 0;
     float smooth_color = exp(-complex_mag(z));
 
-    while (abs(z.im) < 50.0 && (iterations < params.iterations)) {
+    while (abs(z.im) < 50.0 && (iterations < max_iterations)) {
         z = complex_mul(c, complex_sine(z));
         iterations += 1;
         smooth_color += exp(-complex_mag(z));
@@ -321,28 +285,31 @@ float julia_sine(in Complex z, in Complex c) {
 }
 
 void main() {
+  const uvec2 offset = GetBufferAndOffset(g_UniqueResourceId.id);
+  const JuliaFractalParams params = g_JuliaFractalParams[nonuniformEXT(offset.x)].p[nonuniformEXT(offset.y)];
+
     const Complex c = Complex(params.cx, params.cy);
     Complex z = screen_coords_to_complex_coords(
-        gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax
+        gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
     );
 
     float smoothing = 0.0;
     switch (params.iteration_type) {
         case J_ITERATION_SINE:
-            smoothing = julia_sine(z, c);
+            smoothing = julia_sine(z, c, params.iterations);
             break;
 
         case J_ITERATION_COSINE:
-            smoothing = julia_cosine(z, c);
+            smoothing = julia_cosine(z, c, params.iterations);
             break;
 
         case J_ITERATION_CUBIC:
-            smoothing = julia_cubic(z, c);
+            smoothing = julia_cubic(z, c, params.escape_radius, params.iterations);
             break;
 
         default:
         case J_ITERATION_QUADRATIC:
-            smoothing = julia_quadratic(z, c);
+            smoothing = julia_quadratic(z, c, params.escape_radius, params.iterations);
             break;
     }
 
