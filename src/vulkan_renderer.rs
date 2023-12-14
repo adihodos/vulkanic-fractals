@@ -558,9 +558,17 @@ impl ResourceLoadingState {
 }
 
 #[derive(Copy, Clone, Debug)]
+#[cfg(target_os = "unix")]
 pub struct WindowSystemIntegration {
     pub native_disp: *mut std::os::raw::c_void,
     pub native_win: std::os::raw::c_ulong,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg(target_os = "windows")]
+pub struct WindowSystemIntegration {
+    pub hwnd: isize,
+    pub hinstance: isize,
 }
 
 pub struct VulkanState {
@@ -984,6 +992,7 @@ impl VulkanState {
         ash::vk::FALSE
     }
 
+    #[cfg(target_os = "unix")]
     fn create_surface(
         entry: &Entry,
         instance: &Instance,
@@ -996,6 +1005,30 @@ impl VulkanState {
                 &ash::vk::XlibSurfaceCreateInfoKHR::builder()
                     .dpy(wsi.native_disp as *mut ash::vk::Display)
                     .window(std::mem::transmute::<u64, ash::vk::Window>(wsi.native_win)),
+                None,
+            )
+        }
+        .expect("Failed to creale XLIB surface");
+
+        VulkanSurfaceKHRState {
+            ext: ash::extensions::khr::Surface::new(entry, instance),
+            surface: khr_surface,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn create_surface(
+        entry: &Entry,
+        instance: &Instance,
+        wsi: WindowSystemIntegration,
+    ) -> VulkanSurfaceKHRState {
+        let win32_surface = ash::extensions::khr::Win32Surface::new(entry, instance);
+
+        let khr_surface = unsafe {
+            win32_surface.create_win32_surface(
+                &ash::vk::Win32SurfaceCreateInfoKHR::builder()
+                    .hwnd(std::mem::transmute(wsi.hwnd))
+                    .hinstance(std::mem::transmute(wsi.hinstance)),
                 None,
             )
         }
@@ -1298,10 +1331,19 @@ impl VulkanState {
             .engine_version(1);
 
         let enabled_layers = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const c_char];
+
+        #[cfg(target_os = "unix")]
         let enabled_instance_extensions = [
             b"VK_KHR_surface\0".as_ptr() as *const c_char,
             b"VK_EXT_debug_utils\0".as_ptr() as *const c_char,
             b"VK_KHR_xlib_surface\0".as_ptr() as *const c_char,
+        ];
+
+        #[cfg(target_os = "windows")]
+        let enabled_instance_extensions = [
+            b"VK_KHR_surface\0".as_ptr() as *const c_char,
+            b"VK_EXT_debug_utils\0".as_ptr() as *const c_char,
+            b"VK_KHR_win32_surface\0".as_ptr() as *const c_char,
         ];
 
         unsafe {
@@ -1735,7 +1777,7 @@ impl BindlessResourceSystem {
             let img_info = *DescriptorImageInfo::builder()
                 .image_view(imgview.view)
                 .sampler(sampler.handle)
-                .image_layout(ImageLayout::READ_ONLY_OPTIMAL);
+                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             let write = *WriteDescriptorSet::builder()
                 .dst_set(self.descriptor_sets[BindlessResourceType::CombinedImageSampler as usize])
                 .dst_binding(0)

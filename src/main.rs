@@ -93,6 +93,25 @@ struct FractalSimulation {
     bindless_sys: BindlessResourceSystem,
 }
 
+#[cfg(target_os = "windows")]
+fn get_window_data(win: &winit::window::Window) -> WindowSystemIntegration {
+    use winit::platform::windows::WindowExtWindows;
+
+    WindowSystemIntegration {
+        hwnd: win.hwnd(),
+        hinstance: win.hinstance(),
+    }
+}
+
+#[cfg(target_os = "unix")]
+fn get_window_data(win: &winit::window::Window) -> WindowSystemIntegration {
+    use winit::platform::x11::WindowExtX11;
+    WindowSystemIntegration {
+        native_disp: window.xlib_display().unwrap(),
+        native_win: window.xlib_window().unwrap(),
+    }
+}
+
 impl FractalSimulation {
     fn new(window: &winit::window::Window) -> FractalSimulation {
         let cursor_pos = (
@@ -100,15 +119,11 @@ impl FractalSimulation {
             (window.inner_size().height / 2) as f32,
         );
 
-        use winit::platform::x11::WindowExtX11;
-        let wsi = WindowSystemIntegration {
-            native_disp: window.xlib_display().unwrap(),
-            native_win: window.xlib_window().unwrap(),
-        };
-
         log::info!("Cursor initial position {:?}", cursor_pos);
 
-        let mut vks = Box::pin(VulkanState::new(wsi).expect("Failed to initialize vulkan ..."));
+        let mut vks = Box::pin(
+            VulkanState::new(get_window_data(window)).expect("Failed to initialize vulkan ..."),
+        );
         log::info!("### Device limits:\n{:?}", vks.limits());
         log::info!("### Device features:\n{:?}", vks.features());
 
