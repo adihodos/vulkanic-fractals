@@ -21,8 +21,6 @@ mod vulkan_renderer;
 
 use enum_iterator::{next_cycle, previous_cycle};
 
-use crate::vulkan_renderer::WindowSystemIntegration;
-
 fn main() {
     let _logger = flexi_logger::Logger::with(
         flexi_logger::LogSpecification::builder()
@@ -103,12 +101,12 @@ fn get_window_data(win: &winit::window::Window) -> WindowSystemIntegration {
     }
 }
 
-#[cfg(target_os = "unix")]
-fn get_window_data(win: &winit::window::Window) -> WindowSystemIntegration {
+#[cfg(target_os = "linux")]
+fn get_window_data(win: &winit::window::Window) -> vulkan_renderer::WindowSystemIntegration {
     use winit::platform::x11::WindowExtX11;
-    WindowSystemIntegration {
-        native_disp: window.xlib_display().unwrap(),
-        native_win: window.xlib_window().unwrap(),
+    vulkan_renderer::WindowSystemIntegration {
+        native_disp: win.xlib_display().unwrap(),
+        native_win: win.xlib_window().unwrap(),
     }
 }
 

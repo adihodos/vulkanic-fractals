@@ -558,7 +558,7 @@ impl ResourceLoadingState {
 }
 
 #[derive(Copy, Clone, Debug)]
-#[cfg(target_os = "unix")]
+#[cfg(target_os = "linux")]
 pub struct WindowSystemIntegration {
     pub native_disp: *mut std::os::raw::c_void,
     pub native_win: std::os::raw::c_ulong,
@@ -992,7 +992,7 @@ impl VulkanState {
         ash::vk::FALSE
     }
 
-    #[cfg(target_os = "unix")]
+    #[cfg(target_os = "linux")]
     fn create_surface(
         entry: &Entry,
         instance: &Instance,
@@ -1332,7 +1332,7 @@ impl VulkanState {
 
         let enabled_layers = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const c_char];
 
-        #[cfg(target_os = "unix")]
+        #[cfg(target_os = "linux")]
         let enabled_instance_extensions = [
             b"VK_KHR_surface\0".as_ptr() as *const c_char,
             b"VK_EXT_debug_utils\0".as_ptr() as *const c_char,
