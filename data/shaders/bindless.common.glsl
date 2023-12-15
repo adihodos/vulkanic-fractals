@@ -18,6 +18,7 @@ struct JuliaFractalParams {
   float cx;
   float cy;
   uint iteration_type;
+  uint palette;
 };
 
 struct MandelbrotFractalParams {
@@ -34,6 +35,7 @@ struct MandelbrotFractalParams {
   float fymax;
   uint escape_radius;
   uint ftype;
+  uint palette;
 };
 
 struct UiBackendParams {
@@ -54,6 +56,7 @@ layout (set = 0, binding = 0) readonly buffer GlobalUiParamsBuffer {
 } g_UiBackendParams[];
 
 layout (set = 1, binding = 0) uniform sampler2D g_GlobalTexture2DPool[];
+layout (set = 1, binding = 0) uniform sampler1DArray g_GlobalColorPalette[];
 
 layout (push_constant) uniform GlobalResourceId {
   uint id;

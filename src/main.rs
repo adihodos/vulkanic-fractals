@@ -130,8 +130,8 @@ impl FractalSimulation {
         let mut bindless_sys = BindlessResourceSystem::new(&vks);
 
         let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default);
-        let mandelbrot = Mandelbrot::new(&vks, &mut bindless_sys);
-        let julia = Julia::new(&vks, &mut bindless_sys);
+        let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys);
+        let julia = Julia::new(&mut vks, &mut bindless_sys);
 
         vks.end_resource_loading();
 

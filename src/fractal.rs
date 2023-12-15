@@ -1,21 +1,25 @@
 use std::mem::size_of;
 
 use ash::vk::{
-    BufferUsageFlags, ColorComponentFlags, CullModeFlags, DynamicState, Extent2D, FrontFace,
-    GraphicsPipelineCreateInfo, MemoryPropertyFlags, Offset2D, Pipeline, PipelineBindPoint,
-    PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-    PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-    PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-    PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, RenderPass,
-    SampleCountFlags, ShaderStageFlags, Viewport,
+    BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentSwizzle, CullModeFlags,
+    DynamicState, Extent2D, Extent3D, Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
+    ImageLayout, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo, MemoryPropertyFlags,
+    Offset2D, Pipeline, PipelineBindPoint, PipelineColorBlendAttachmentState,
+    PipelineColorBlendStateCreateInfo, PipelineDynamicStateCreateInfo,
+    PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineMultisampleStateCreateInfo,
+    PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
+    PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
+    PrimitiveTopology, Rect2D, RenderPass, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo,
+    SamplerMipmapMode, ShaderStageFlags, SharingMode, Viewport,
 };
 use enum_iterator::{next_cycle, previous_cycle};
+use palette::chromatic_adaptation::AdaptInto;
 
 use crate::{
     vulkan_renderer::{
         compile_shader_from_file, BindlessResourceHandle, BindlessResourceSystem,
-        FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanDeviceState, VulkanState,
+        FrameRenderContext, UniqueBuffer, UniqueBufferMapping, UniqueImage, UniqueImageView,
+        UniqueSampler, VulkanDeviceState, VulkanState,
     },
     InputState,
 };
@@ -66,6 +70,7 @@ struct FractalCore<T: FractalCoreParams> {
     fymin: f32,
     fymax: f32,
     escape_radius: u32,
+    palette: u32,
     _t: std::marker::PhantomData<T>,
 }
 
@@ -87,6 +92,7 @@ where
             fymin: -T::FRACTAL_HALF_HEIGHT,
             fymax: T::FRACTAL_HALF_HEIGHT,
             escape_radius: 2,
+            palette: 0,
             _t: std::marker::PhantomData::default(),
         }
     }
@@ -529,7 +535,7 @@ impl Julia {
         },
     ];
 
-    pub fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Julia {
+    pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Julia {
         Self {
             params: JuliaCPU2GPU::new(
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
@@ -721,7 +727,7 @@ pub struct Mandelbrot {
 }
 
 impl Mandelbrot {
-    pub fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
+    pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
         Self {
             params: MandelbrotCPU2GPU {
                 core: FractalCore::default(),
@@ -776,6 +782,10 @@ struct FractalGPUState<T: FractalCoreParams + Copy> {
     bindless_layout: PipelineLayout,
     ubo_params: UniqueBuffer,
     ubo_handle: BindlessResourceHandle,
+    palettes: UniqueImage,
+    palettes_view: UniqueImageView,
+    sampler: UniqueSampler,
+    palette_handle: BindlessResourceHandle,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -783,7 +793,82 @@ impl<T> FractalGPUState<T>
 where
     T: FractalCoreParams + Copy,
 {
-    fn new(vks: &VulkanState, bindless: &mut BindlessResourceSystem) -> Self {
+    fn make_palettes(vks: &mut VulkanState) -> (UniqueImage, UniqueImageView, UniqueSampler) {
+        use enterpolation::{linear::ConstEquidistantLinear, Curve};
+        use palette::{rgb, LinSrgb, Srgb};
+
+        let gradient = ConstEquidistantLinear::<f32, _, 3>::equidistant_unchecked([
+            LinSrgb::new(0.00, 0.05, 0.20),
+            LinSrgb::new(0.70, 0.10, 0.20),
+            LinSrgb::new(0.95, 0.90, 0.30),
+        ]);
+
+        let colors = gradient
+            .take(512)
+            .map(|c| {
+                let a: Srgb<u8> = c.into();
+                a.into_u32::<rgb::channels::Rgba>()
+                //
+            })
+            .collect::<Vec<_>>();
+
+        use ash::vk::ImageCreateInfo;
+        let palette = UniqueImage::from_bytes(
+            vks,
+            *ImageCreateInfo::builder()
+                .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
+                .tiling(ImageTiling::OPTIMAL)
+                .format(Format::R8G8B8A8_UNORM)
+                .samples(SampleCountFlags::TYPE_1)
+                .mip_levels(1)
+                .array_layers(1)
+                .extent(*Extent3D::builder().width(512).height(1).depth(1))
+                .image_type(ImageType::TYPE_1D)
+                .initial_layout(ImageLayout::UNDEFINED)
+                .sharing_mode(SharingMode::EXCLUSIVE),
+            unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) },
+        );
+
+        let palette_view = UniqueImageView::new(
+            vks,
+            &palette,
+            *ImageViewCreateInfo::builder()
+                .format(ash::vk::Format::R8G8B8A8_UNORM)
+                .image(palette.image)
+                .subresource_range(
+                    *ash::vk::ImageSubresourceRange::builder()
+                        .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
+                        .base_array_layer(0)
+                        .base_mip_level(0)
+                        .layer_count(1)
+                        .level_count(1),
+                )
+                .view_type(ash::vk::ImageViewType::TYPE_1D_ARRAY)
+                .components(
+                    *ash::vk::ComponentMapping::builder()
+                        .a(ComponentSwizzle::IDENTITY)
+                        .r(ComponentSwizzle::IDENTITY)
+                        .g(ComponentSwizzle::IDENTITY)
+                        .b(ComponentSwizzle::IDENTITY),
+                ),
+        );
+
+        let sampler = UniqueSampler::new(
+            vks,
+            *SamplerCreateInfo::builder()
+                .address_mode_u(SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_v(SamplerAddressMode::CLAMP_TO_EDGE)
+                .address_mode_w(SamplerAddressMode::CLAMP_TO_EDGE)
+                .border_color(BorderColor::INT_OPAQUE_BLACK)
+                .mag_filter(Filter::LINEAR)
+                .min_filter(Filter::LINEAR)
+                .mipmap_mode(SamplerMipmapMode::LINEAR),
+        );
+
+        (palette, palette_view, sampler)
+    }
+
+    fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Self {
         let pipeline = Self::create_graphics_pipeline(&vks.ds, vks.renderpass, bindless);
 
         let ubo_params = UniqueBuffer::new::<T>(
@@ -794,12 +879,18 @@ where
         );
 
         let ubo_handle = bindless.register_ssbo(&vks.ds, &ubo_params);
+        let (palettes, palettes_view, sampler) = Self::make_palettes(vks);
+        let palette_handle = bindless.register_image(&vks.ds, &palettes_view, &sampler);
 
         Self {
             pipeline,
             bindless_layout: bindless.bindless_pipeline_layout(),
             ubo_params,
             ubo_handle,
+            palettes,
+            palettes_view,
+            sampler,
+            palette_handle,
             _marker: std::marker::PhantomData::<T>,
         }
     }
@@ -809,6 +900,13 @@ where
             offset: Offset2D { x: 0, y: 0 },
             extent: context.fb_size,
         };
+
+        // let data = T {
+        //     palette: self.palette_handle.get_id(),
+        //     ..*gpu_data
+        // };
+        let mut data = *gpu_data;
+        data.palette = 0;
 
         //
         // copy params
