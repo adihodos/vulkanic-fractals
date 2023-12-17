@@ -285,8 +285,9 @@ float julia_sine(in Complex z, in Complex c, in uint max_iterations) {
 }
 
 void main() {
-  const uvec2 offset = GetBufferAndOffset(g_UniqueResourceId.id);
-  const JuliaFractalParams params = g_JuliaFractalParams[nonuniformEXT(offset.x)].p[nonuniformEXT(offset.y)];
+  const uint frameId = g_GlobalParams.frameId;
+  const uint offset = g_UniqueResourceId.id;
+  const JuliaFractalParams params = g_JuliaFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
 
     const Complex c = Complex(params.cx, params.cy);
     Complex z = screen_coords_to_complex_coords(

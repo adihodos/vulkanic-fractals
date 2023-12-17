@@ -13,9 +13,10 @@ layout (location = 0) out VS_OUT_FS_IN {
 } vs_out;
 
 void main() {
-  const uvec2 ids = GetBufferAndOffset(g_UniqueResourceId.id);
+  const uint id = g_UniqueResourceId.id;
+  const uint frameId = g_GlobalParams.frameId;
 
-  const UiBackendParams beParams = g_UiBackendParams[nonuniformEXT(ids.x)].p[nonuniformEXT(ids.y)];
+  const UiBackendParams beParams = g_UiBackendParams[nonuniformEXT(id)].p[nonuniformEXT(frameId)];
 
   gl_Position = beParams.worldViewProjection * vec4(vs_in_pos, 0.0, 1.0);
   vs_out.uv = vs_in_uv;

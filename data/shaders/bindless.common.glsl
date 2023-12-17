@@ -18,7 +18,6 @@ struct JuliaFractalParams {
   float cx;
   float cy;
   uint iteration_type;
-  uint palette;
 };
 
 struct MandelbrotFractalParams {
@@ -35,13 +34,17 @@ struct MandelbrotFractalParams {
   float fymax;
   uint escape_radius;
   uint ftype;
-  uint palette;
 };
 
 struct UiBackendParams {
   mat4 worldViewProjection;
   uint fontAtlasId;
 };
+
+layout (set = 2, binding = 0) uniform GlobalParameters {
+  // mat4 worldViewProj;
+  uint frameId;
+} g_GlobalParams;
 
 layout (set = 0, binding = 0) readonly buffer GlobalJuliaParamsBuffer  {
   JuliaFractalParams p[];
@@ -62,6 +65,6 @@ layout (push_constant) uniform GlobalResourceId {
   uint id;
 } g_UniqueResourceId;
 
-uvec2 GetBufferAndOffset(uint resid) {
-  return uvec2(resid & 0x0000FFFF, (resid >> 16) & 0x0000FFFF);
-}
+// uvec2 GetBufferAndOffset(uint resid) {
+//   return uvec2(resid & 0x0000FFFF, (resid >> 16) & 0x0000FFFF);
+// }

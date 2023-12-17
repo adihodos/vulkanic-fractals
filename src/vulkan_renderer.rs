@@ -14,18 +14,17 @@ use ash::{
         ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags,
-        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateFlags,
-        DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo,
-        DescriptorSetLayout, DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo,
-        DeviceMemory, DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags,
-        FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo,
-        Image, ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-        ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
-        MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
-        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceMemoryProperties,
-        PhysicalDeviceProperties, PhysicalDeviceType, PhysicalDeviceVulkan12Features, Pipeline,
-        PipelineBindPoint, PipelineCache, PipelineLayout, PipelineLayoutCreateFlags,
+        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo,
+        DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
+        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
+        DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo,
+        Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo, Image,
+        ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageSubresourceLayers,
+        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags,
+        MemoryPropertyFlags, MemoryRequirements, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceType,
+        PhysicalDeviceVulkan12Features, Pipeline, PipelineBindPoint, PipelineCache, PipelineLayout,
         PipelineLayoutCreateInfo, PipelineStageFlags, PresentInfoKHR, PresentModeKHR,
         PushConstantRange, Queue, RenderPass, RenderPassCreateInfo, SampleCountFlags, Sampler,
         SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
@@ -1599,6 +1598,7 @@ pub struct FrameRenderContext {
 pub enum BindlessResourceType {
     Ssbo,
     CombinedImageSampler,
+    UniformBuffer,
 }
 
 impl BindlessResourceType {
@@ -1606,6 +1606,7 @@ impl BindlessResourceType {
         match self {
             BindlessResourceType::Ssbo => DescriptorType::STORAGE_BUFFER,
             BindlessResourceType::CombinedImageSampler => DescriptorType::COMBINED_IMAGE_SAMPLER,
+            BindlessResourceType::UniformBuffer => DescriptorType::UNIFORM_BUFFER,
         }
     }
 }
@@ -1619,6 +1620,7 @@ impl BindlessResourceHandle {
         match bits {
             0 => BindlessResourceType::Ssbo,
             1 => BindlessResourceType::CombinedImageSampler,
+            2 => BindlessResourceType::UniformBuffer,
             _ => todo!("Handle this"),
         }
     }
@@ -1631,6 +1633,7 @@ impl BindlessResourceHandle {
         match ty {
             BindlessResourceType::Ssbo => Self(id << 2),
             BindlessResourceType::CombinedImageSampler => Self(1 | (id << 2)),
+            BindlessResourceType::UniformBuffer => Self(2 | (id << 2)),
         }
     }
 }
@@ -1641,6 +1644,7 @@ pub struct BindlessResourceSystem {
     descriptor_sets: Vec<DescriptorSet>,
     ssbos: Vec<BindlessResourceHandle>,
     samplers: Vec<BindlessResourceHandle>,
+    ubos: Vec<BindlessResourceHandle>,
     bindless_pipeline_layout: PipelineLayout,
 }
 
@@ -1659,6 +1663,9 @@ impl BindlessResourceSystem {
 
     pub fn new(vks: &VulkanState) -> Self {
         let dpool_sizes = [
+            *DescriptorPoolSize::builder()
+                .ty(DescriptorType::UNIFORM_BUFFER)
+                .descriptor_count(1024),
             *DescriptorPoolSize::builder()
                 .ty(DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1024),
@@ -1687,12 +1694,17 @@ impl BindlessResourceSystem {
                         *ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
                             .binding_flags(&[ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND]);
 
+                    let dcount = match res_type {
+                        BindlessResourceType::UniformBuffer => 8,
+                        _ => 1024,
+                    };
+
                     vks.ds.device.create_descriptor_set_layout(
                         &DescriptorSetLayoutCreateInfo::builder()
                             .push_next(&mut flag_info)
                             .flags(ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
                             .bindings(&[*ash::vk::DescriptorSetLayoutBinding::builder()
-                                .descriptor_count(1024)
+                                .descriptor_count(dcount)
                                 .binding(0)
                                 .descriptor_type(res_type.as_vk_type())
                                 .stage_flags(ash::vk::ShaderStageFlags::ALL)]),
@@ -1731,6 +1743,7 @@ impl BindlessResourceSystem {
             descriptor_sets,
             ssbos: vec![],
             samplers: vec![],
+            ubos: vec![],
             bindless_pipeline_layout,
         }
     }
@@ -1784,6 +1797,34 @@ impl BindlessResourceSystem {
                 .dst_array_element(idx)
                 .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(std::slice::from_ref(&img_info));
+
+            vks.device
+                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
+        }
+
+        handle
+    }
+
+    pub fn register_uniform_buffer(
+        &mut self,
+        vks: &VulkanDeviceState,
+        ubo: &UniqueBuffer,
+    ) -> BindlessResourceHandle {
+        let idx = self.ubos.len() as u32;
+        let handle = BindlessResourceHandle::new(BindlessResourceType::UniformBuffer, idx);
+        self.ubos.push(handle);
+
+        unsafe {
+            let buf_info = *DescriptorBufferInfo::builder()
+                .buffer(ubo.handle)
+                .range(WHOLE_SIZE)
+                .offset(0);
+            let write = *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
+                .dst_binding(0)
+                .dst_array_element(idx)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(std::slice::from_ref(&buf_info));
 
             vks.device
                 .update_descriptor_sets(std::slice::from_ref(&write), &[]);

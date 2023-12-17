@@ -1,6 +1,8 @@
+use std::mem::size_of;
+
 use ash::vk::{
-    ClearColorValue, ClearValue, Offset2D, PipelineBindPoint, Rect2D, RenderPassBeginInfo,
-    SubpassContents,
+    BufferUsageFlags, ClearColorValue, ClearValue, MemoryPropertyFlags, Offset2D,
+    PipelineBindPoint, Rect2D, RenderPassBeginInfo, SubpassContents,
 };
 
 use fractal::{Julia, Mandelbrot};
@@ -89,6 +91,7 @@ struct FractalSimulation {
     cursor_pos: (f32, f32),
     vks: std::pin::Pin<Box<VulkanState>>,
     bindless_sys: BindlessResourceSystem,
+    ubo_globals: UniqueBuffer,
 }
 
 #[cfg(target_os = "windows")]
@@ -108,6 +111,14 @@ fn get_window_data(win: &winit::window::Window) -> vulkan_renderer::WindowSystem
         native_disp: win.xlib_display().unwrap(),
         native_win: win.xlib_window().unwrap(),
     }
+}
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+struct UniformGlobals {
+    // mat: [f32; 16],
+    frame_id: u32,
+    // pad: [u32; 3],
 }
 
 impl FractalSimulation {
@@ -135,6 +146,14 @@ impl FractalSimulation {
 
         vks.end_resource_loading();
 
+        let ubo_globals = UniqueBuffer::new::<UniformGlobals>(
+            &vks,
+            BufferUsageFlags::UNIFORM_BUFFER,
+            MemoryPropertyFlags::HOST_VISIBLE,
+            vks.swapchain.max_frames as usize,
+        );
+        bindless_sys.register_uniform_buffer(&vks.ds, &ubo_globals);
+
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
             julia,
@@ -144,6 +163,7 @@ impl FractalSimulation {
             cursor_pos,
             vks,
             ui,
+            ubo_globals,
             bindless_sys,
         }
     }
@@ -156,6 +176,20 @@ impl FractalSimulation {
             offset: Offset2D { x: 0, y: 0 },
             extent: frame_context.fb_size,
         };
+
+        let ubo_data = UniformGlobals {
+            // mat: [1f32; 16],
+            frame_id: frame_context.current_frame_id,
+            // pad: [0u32; 3],
+        };
+
+        UniqueBufferMapping::new(
+            &self.ubo_globals,
+            &self.vks.ds,
+            Some(size_of::<UniformGlobals>() * frame_context.current_frame_id as usize),
+            Some(size_of::<UniformGlobals>()),
+        )
+        .write_data(std::slice::from_ref(&ubo_data));
 
         unsafe {
             self.vks.ds.device.cmd_begin_render_pass(

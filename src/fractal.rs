@@ -13,7 +13,6 @@ use ash::vk::{
     SamplerMipmapMode, ShaderStageFlags, SharingMode, Viewport,
 };
 use enum_iterator::{next_cycle, previous_cycle};
-use palette::chromatic_adaptation::AdaptInto;
 
 use crate::{
     vulkan_renderer::{
@@ -70,7 +69,6 @@ struct FractalCore<T: FractalCoreParams> {
     fymin: f32,
     fymax: f32,
     escape_radius: u32,
-    palette: u32,
     _t: std::marker::PhantomData<T>,
 }
 
@@ -92,7 +90,6 @@ where
             fymin: -T::FRACTAL_HALF_HEIGHT,
             fymax: T::FRACTAL_HALF_HEIGHT,
             escape_radius: 2,
-            palette: 0,
             _t: std::marker::PhantomData::default(),
         }
     }
@@ -905,8 +902,7 @@ where
         //     palette: self.palette_handle.get_id(),
         //     ..*gpu_data
         // };
-        let mut data = *gpu_data;
-        data.palette = 0;
+
 
         //
         // copy params
@@ -942,17 +938,12 @@ where
                 self.pipeline,
             );
 
-            let id = BindlessResourceSystem::make_push_constant(
-                context.current_frame_id,
-                self.ubo_handle,
-            );
-
             vks.ds.device.cmd_push_constants(
                 context.cmd_buff,
                 self.bindless_layout,
                 ShaderStageFlags::ALL,
                 0,
-                &id.to_le_bytes(),
+                &self.ubo_handle.get_id().to_le_bytes(),
             );
 
             vks.ds.device.cmd_draw(context.cmd_buff, 3, 1, 0, 0);

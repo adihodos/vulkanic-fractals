@@ -806,17 +806,12 @@ impl UiBackend {
             )
             .write_data(std::slice::from_ref(&transform));
 
-            let id = BindlessResourceSystem::make_push_constant(
-                frame_context.current_frame_id,
-                self.rs.ubo_handle,
-            );
-
             vks.ds.device.cmd_push_constants(
                 frame_context.cmd_buff,
                 self.rs.bindless_layout,
                 ShaderStageFlags::ALL,
                 0,
-                &id.to_le_bytes(),
+                &self.rs.ubo_handle.get_id().to_le_bytes(),
             );
 
             //
