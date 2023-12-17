@@ -334,7 +334,7 @@ pub struct UniqueBuffer {
     device: *const Device,
     pub handle: Buffer,
     pub memory: DeviceMemory,
-    pub item_aligned_size: usize,
+    pub aligned_item_size: usize,
 }
 
 impl std::ops::Drop for UniqueBuffer {
@@ -352,13 +352,13 @@ impl std::ops::Drop for UniqueBuffer {
 }
 
 impl UniqueBuffer {
-    pub fn new<T: Sized>(
+    pub fn with_capacity(
         ds: &VulkanState,
         usage: BufferUsageFlags,
         memory_flags: MemoryPropertyFlags,
         items: usize,
+        item_size: usize,
     ) -> Self {
-        log::info!("CreateBuffer -> items = {items}");
         let align_size = if memory_flags.intersects(MemoryPropertyFlags::HOST_VISIBLE)
             && !memory_flags.intersects(MemoryPropertyFlags::HOST_COHERENT)
         {
@@ -389,8 +389,8 @@ impl UniqueBuffer {
             }
         } as usize;
 
-        // let item_aligned_size = round_up(std::mem::size_of::<T>(), align_size);
-        let size = round_up(std::mem::size_of::<T>() * items, align_size);
+        let aligned_item_size = round_up(item_size, align_size);
+        let size = aligned_item_size * items;
 
         let buffer = unsafe {
             ds.ds.device.create_buffer(
@@ -425,17 +425,27 @@ impl UniqueBuffer {
         }
 
         log::debug!(
-            "Create buffer and memory object {:?} -> {:?}",
+            "Create buffer and memory object {:?} -> {:?} -> {}",
             buffer,
-            buffer_memory
+            buffer_memory,
+            memory_req.size
         );
 
         Self {
             device: &ds.ds.device as *const _,
             handle: buffer,
             memory: buffer_memory,
-            item_aligned_size: align_size,
+            aligned_item_size,
         }
+    }
+
+    pub fn new<T: Sized>(
+        ds: &VulkanState,
+        usage: BufferUsageFlags,
+        memory_flags: MemoryPropertyFlags,
+        items: usize,
+    ) -> Self {
+        Self::with_capacity(ds, usage, memory_flags, items, std::mem::size_of::<T>())
     }
 }
 
@@ -444,7 +454,6 @@ fn round_up(num_to_round: usize, multiple: usize) -> usize {
     if num_to_round == 0 {
         0
     } else {
-        // ((num_to_round + multiple - 1) / multiple) * multiple
         ((num_to_round - 1) / multiple + 1) * multiple
     }
 }
@@ -468,12 +477,12 @@ impl<'a> UniqueBufferMapping<'a> {
         let round_down = |x: usize, m: usize| (x / m) * m;
 
         let offset = offset.unwrap_or_default();
-        let range_start = round_down(offset, buf.item_aligned_size);
+        let range_start = round_down(offset, buf.aligned_item_size);
 
         assert!(offset >= range_start);
 
         let range_size = size
-            .map(|s| round_up(s, buf.item_aligned_size))
+            .map(|s| round_up(s, buf.aligned_item_size))
             .unwrap_or(ash::vk::WHOLE_SIZE as usize);
 
         let mapped_memory = unsafe {

@@ -287,15 +287,16 @@ float julia_sine(in Complex z, in Complex c, in uint max_iterations) {
 void main() {
   const uint frameId = g_GlobalParams.frameId;
   const uint offset = g_UniqueResourceId.id;
-  const JuliaFractalParams params = g_JuliaFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
+  const JuliaFractalParams j_params = g_JuliaFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
+  const FractalCommonCore params = j_params.cc;
 
-    const Complex c = Complex(params.cx, params.cy);
+    const Complex c = Complex(j_params.cx, j_params.cy);
     Complex z = screen_coords_to_complex_coords(
         gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
     );
 
     float smoothing = 0.0;
-    switch (params.iteration_type) {
+    switch (j_params.iteration_type) {
         case J_ITERATION_SINE:
             smoothing = julia_sine(z, c, params.iterations);
             break;

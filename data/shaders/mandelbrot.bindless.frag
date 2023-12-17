@@ -232,7 +232,8 @@ float mandelbrot_burning_ship(in Complex z, in Complex c, in uint max_iterations
 void main() {
   const uint frameId = g_GlobalParams.frameId;
   const uint offset = g_UniqueResourceId.id;
-  const MandelbrotFractalParams params = g_MandelbrotFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
+  const MandelbrotFractalParams mandel_params = g_MandelbrotFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
+  const FractalCommonCore params = mandel_params.cc;
 
   const Complex c = screen_coords_to_complex_coords(
 						    gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
@@ -242,7 +243,7 @@ void main() {
 
   float mu = 0.0;
 
-  switch (params.ftype) {
+  switch (mandel_params.ftype) {
   case M_TYPE_STANDARD:
     mu = mandelbrot_standard(z, c, params.escape_radius, params.iterations);
     break;

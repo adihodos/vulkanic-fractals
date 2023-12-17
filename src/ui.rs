@@ -342,6 +342,7 @@ impl UiBackend {
         let logical_size = window.inner_size().to_logical(hidpi_factor);
         let logical_size = Self::scale_size_from_winit(&platform, window, logical_size);
         imgui.io_mut().display_size = [logical_size.width as f32, logical_size.height as f32];
+	imgui.io_mut().mouse_pos = [0f32; 2];
 
         let vertex_buffer = UniqueBuffer::new::<UiVertex>(
             vks,

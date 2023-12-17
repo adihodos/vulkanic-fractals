@@ -2,7 +2,7 @@
 
 layout (std140) buffer;
 
-struct JuliaFractalParams {
+struct FractalCommonCore {
   uint screen_width;
   uint screen_height;
   uint iterations;
@@ -15,24 +15,17 @@ struct JuliaFractalParams {
   float fymin;
   float fymax;
   uint escape_radius;
+};
+
+struct JuliaFractalParams {
+  FractalCommonCore cc;
   float cx;
   float cy;
   uint iteration_type;
 };
 
 struct MandelbrotFractalParams {
-  uint screen_width;
-  uint screen_height;
-  uint iterations;
-  float zoom;
-  float ox;
-  float oy;
-  uint coloring;
-  float fxmin;
-  float fxmax;
-  float fymin;
-  float fymax;
-  uint escape_radius;
+  FractalCommonCore cc;
   uint ftype;
 };
 
@@ -64,7 +57,3 @@ layout (set = 1, binding = 0) uniform sampler1DArray g_GlobalColorPalette[];
 layout (push_constant) uniform GlobalResourceId {
   uint id;
 } g_UniqueResourceId;
-
-// uvec2 GetBufferAndOffset(uint resid) {
-//   return uvec2(resid & 0x0000FFFF, (resid >> 16) & 0x0000FFFF);
-// }

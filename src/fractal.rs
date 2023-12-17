@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use ash::vk::{
     BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentSwizzle, CullModeFlags,
     DynamicState, Extent2D, Extent3D, Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
@@ -12,6 +10,7 @@ use ash::vk::{
     PrimitiveTopology, Rect2D, RenderPass, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo,
     SamplerMipmapMode, ShaderStageFlags, SharingMode, Viewport,
 };
+use crevice::std140::AsStd140;
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
@@ -23,9 +22,10 @@ use crate::{
     InputState,
 };
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence, num_enum::FromPrimitive)]
 #[repr(u32)]
 pub enum Coloring {
+    #[default]
     BlackWhite,
     Smooth,
     Log,
@@ -52,54 +52,47 @@ trait FractalCoreParams {
     const VERTEX_SHADER_MODULE: &'static str;
     const FRAGMENT_SHADER_MODULE: &'static str;
     const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str;
+
+    fn ssbo_size() -> usize;
 }
 
-#[derive(Copy, Clone, Debug)]
-#[repr(C, align(16))]
-struct FractalCore<T: FractalCoreParams> {
+#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
+struct FractalCommonCore {
     screen_width: u32,
     screen_height: u32,
     iterations: u32,
     zoom: f32,
     ox: f32,
     oy: f32,
-    coloring: Coloring,
+    coloring: u32,
     fxmin: f32,
     fxmax: f32,
     fymin: f32,
     fymax: f32,
     escape_radius: u32,
-    _t: std::marker::PhantomData<T>,
 }
 
-impl<T> std::default::Default for FractalCore<T>
-where
-    T: FractalCoreParams,
-{
-    fn default() -> Self {
+impl FractalCommonCore {
+    fn new<T: FractalCoreParams>() -> Self {
+        use crevice::glsl::GlslStruct;
+        log::info!("FractalCore GLSL def {}", Self::glsl_definition());
         Self {
             screen_width: 1024,
             screen_height: 1024,
-            iterations: 64,
-            coloring: Coloring::BlackWhite,
+            iterations: 32,
             zoom: 1f32,
             ox: 0f32,
             oy: 0f32,
+            coloring: Coloring::BlackWhite as u32,
             fxmin: -T::FRACTAL_HALF_WIDTH,
             fxmax: T::FRACTAL_HALF_WIDTH,
             fymin: -T::FRACTAL_HALF_HEIGHT,
             fymax: T::FRACTAL_HALF_HEIGHT,
-            escape_radius: 2,
-            _t: std::marker::PhantomData::default(),
+            escape_radius: T::ESC_RADIUS_MIN,
         }
     }
-}
 
-impl<T> FractalCore<T>
-where
-    T: FractalCoreParams,
-{
-    pub fn input_handler(&mut self, input_state: &InputState) {
+    pub fn input_handler<T: FractalCoreParams>(&mut self, input_state: &InputState) {
         use winit::event::ElementState;
         use winit::event::MouseButton;
         use winit::event::VirtualKeyCode;
@@ -107,7 +100,7 @@ where
 
         match *input_state.event {
             WindowEvent::Resized(new_size) => {
-                self.screen_resized(new_size.width, new_size.height);
+                self.screen_resized::<T>(new_size.width, new_size.height);
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
@@ -120,9 +113,9 @@ where
                 };
 
                 if !zoom_in {
-                    self.zoom_out();
+                    self.zoom_out::<T>();
                 } else {
-                    self.zoom_in();
+                    self.zoom_in::<T>();
                 }
             }
 
@@ -140,23 +133,23 @@ where
                 }
 
                 Some(VirtualKeyCode::PageDown) => {
-                    self.next_color();
+                    self.next_color::<T>();
                 }
 
                 Some(VirtualKeyCode::NumpadSubtract) => {
-                    self.decrease_iterations();
+                    self.decrease_iterations::<T>();
                 }
 
                 Some(VirtualKeyCode::NumpadAdd) => {
-                    self.increase_iterations();
+                    self.increase_iterations::<T>();
                 }
 
                 Some(VirtualKeyCode::Insert) => {
-                    self.increase_escape_radius();
+                    self.increase_escape_radius::<T>();
                 }
 
                 Some(VirtualKeyCode::Delete) => {
-                    self.decrease_escape_radius();
+                    self.decrease_escape_radius::<T>();
                 }
                 _ => {}
             },
@@ -167,14 +160,14 @@ where
                 ..
             } => match button {
                 MouseButton::Left => {
-                    self.center_moved(
+                    self.center_moved::<T>(
                         input_state.cursor_pos.0,
                         input_state.cursor_pos.1,
                         input_state.control_down,
                     );
                 }
                 MouseButton::Right => {
-                    self.zoom_out();
+                    self.zoom_out::<T>();
                 }
                 _ => {}
             },
@@ -182,7 +175,7 @@ where
         }
     }
 
-    fn center_moved(&mut self, cx: f32, cy: f32, zoom: bool) {
+    fn center_moved<T: FractalCoreParams>(&mut self, cx: f32, cy: f32, zoom: bool) {
         let (cx, cy) = screen_coords_to_complex_coords(
             cx,
             cy,
@@ -207,7 +200,7 @@ where
         self.fymax = self.oy + T::FRACTAL_HALF_HEIGHT * self.zoom;
     }
 
-    fn zoom_out(&mut self) {
+    fn zoom_out<T: FractalCoreParams>(&mut self) {
         self.zoom = (self.zoom * T::ZOOM_OUT_FACTOR).min(1f32);
         self.fxmin = self.ox - T::FRACTAL_HALF_WIDTH * self.zoom;
         self.fxmax = self.ox + T::FRACTAL_HALF_WIDTH * self.zoom;
@@ -215,7 +208,7 @@ where
         self.fymax = self.oy + T::FRACTAL_HALF_HEIGHT * self.zoom;
     }
 
-    fn zoom_in(&mut self) {
+    fn zoom_in<T: FractalCoreParams>(&mut self) {
         self.zoom = (self.zoom * T::ZOOM_IN_FACTOR).max(0f32);
         self.fxmin = self.ox - T::FRACTAL_HALF_WIDTH * self.zoom;
         self.fxmax = self.ox + T::FRACTAL_HALF_WIDTH * self.zoom;
@@ -223,48 +216,51 @@ where
         self.fymax = self.oy + T::FRACTAL_HALF_HEIGHT * self.zoom;
     }
 
-    fn screen_resized(&mut self, width: u32, height: u32) {
+    fn screen_resized<T: FractalCoreParams>(&mut self, width: u32, height: u32) {
         self.screen_width = width;
         self.screen_height = height;
     }
 
-    fn increase_iterations(&mut self) {
+    fn increase_iterations<T: FractalCoreParams>(&mut self) {
         self.iterations = (self.iterations * 2).min(T::MAX_ITERATIONS);
     }
 
-    fn decrease_iterations(&mut self) {
+    fn decrease_iterations<T: FractalCoreParams>(&mut self) {
         self.iterations = (self.iterations / 2).max(T::MIN_ITERATIONS);
     }
 
-    fn next_color(&mut self) {
-        self.coloring = next_cycle(&self.coloring).unwrap();
+    fn next_color<T: FractalCoreParams>(&mut self) {
+        self.coloring = next_cycle(&Coloring::from(self.coloring)).unwrap() as _;
     }
 
     fn previous_color(&mut self) {
-        self.coloring = previous_cycle(&self.coloring).unwrap();
+        self.coloring = previous_cycle(&Coloring::from(self.coloring)).unwrap() as _;
     }
 
-    fn increase_escape_radius(&mut self) {
+    fn increase_escape_radius<T: FractalCoreParams>(&mut self) {
         self.escape_radius = (self.escape_radius * 2).min(T::ESC_RADIUS_MAX);
     }
 
-    fn decrease_escape_radius(&mut self) {
+    fn decrease_escape_radius<T: FractalCoreParams>(&mut self) {
         self.escape_radius = (self.escape_radius / 2).max(T::ESC_RADIUS_MIN);
     }
 
-    fn reset(&mut self) {
+    fn reset<T: FractalCoreParams>(&mut self) {
         *self = Self {
             screen_width: self.screen_width,
             screen_height: self.screen_height,
-            ..Default::default()
+            ..Self::new::<T>()
         };
     }
 
-    pub fn do_ui(&mut self, ui: &imgui::Ui) {
+    pub fn do_ui<T: FractalCoreParams>(&mut self, ui: &imgui::Ui) {
         //
         // coloring algorithm
-        if let Some(_cb) = ui.begin_combo("Coloring algorithm", format!("{:?}", self.coloring)) {
-            let mut selected = self.coloring;
+        if let Some(_cb) = ui.begin_combo(
+            "Coloring algorithm",
+            format!("{:?}", Coloring::from(self.coloring)),
+        ) {
+            let mut selected = Coloring::from(self.coloring);
             for item in enum_iterator::all::<Coloring>() {
                 if selected == item {
                     ui.set_item_default_focus();
@@ -278,7 +274,7 @@ where
                 // When item is clicked, store it
                 if clicked {
                     selected = item;
-                    self.coloring = item;
+                    self.coloring = item as _;
                 }
             }
         }
@@ -309,17 +305,17 @@ where
         let cursor_pos = ui.io().mouse_pos;
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Cursor position: ({}, {})", cursor_pos[0], cursor_pos[1]),
+            format!("Cursor position: ({:.2}, {:.2})", cursor_pos[0], cursor_pos[1]),
         );
 
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Center: ({}, {})", self.ox, self.oy),
+            format!("Center: ({:.4}, {:.4})", self.ox, self.oy),
         );
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
             format!(
-                "Domain: ({}, {}) x ({}, {})",
+                "Domain: ({:.4}, {:.4}) x ({:.4}, {:.4})",
                 self.fxmin, self.fymin, self.fxmax, self.fymax
             ),
         );
@@ -330,25 +326,22 @@ where
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-struct MandelbrotParams {}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence, num_enum::FromPrimitive)]
 #[repr(u32)]
 enum JuliaIterationType {
+    #[default]
     Quadratic,
     Sine,
     Cosine,
     Cubic,
 }
 
-#[derive(Copy, Clone, Debug)]
-#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
 pub struct JuliaCPU2GPU {
-    core: FractalCore<JuliaCPU2GPU>,
+    core: FractalCommonCore,
     c_x: f32,
     c_y: f32,
-    iteration: JuliaIterationType,
+    iteration: u32,
 }
 
 impl FractalCoreParams for JuliaCPU2GPU {
@@ -365,6 +358,20 @@ impl FractalCoreParams for JuliaCPU2GPU {
     const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
     const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/julia.frag";
     const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/julia.bindless.frag";
+
+    fn ssbo_size() -> usize {
+        // log::info!("GLSL {}", Self::glsl_definition());
+
+        let mut sizer = crevice::std140::Sizer::new();
+        sizer.add::<FractalCommonCore>();
+        sizer.add::<f32>();
+        sizer.add::<f32>();
+        sizer.add::<u32>();
+
+        log::info!("Julia SSBO item size {}", sizer.len());
+
+        sizer.len()
+    }
 }
 
 impl std::default::Default for JuliaCPU2GPU {
@@ -372,26 +379,28 @@ impl std::default::Default for JuliaCPU2GPU {
         Self {
             c_x: -0.7f32,
             c_y: -0.3f32,
-            iteration: JuliaIterationType::Quadratic,
-            core: Default::default(),
+            iteration: JuliaIterationType::Quadratic as u32,
+            core: FractalCommonCore::new::<JuliaCPU2GPU>(),
         }
     }
 }
 
 impl JuliaCPU2GPU {
     fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType) -> JuliaCPU2GPU {
+        use crevice::glsl::GlslStruct;
+        log::info!("Julia GLSL {}", Self::glsl_definition());
         Self {
-            core: Default::default(),
+            core: FractalCommonCore::new::<JuliaCPU2GPU>(),
             c_x,
             c_y,
-            iteration,
+            iteration: iteration as _,
         }
     }
 }
 
 pub struct Julia {
     params: JuliaCPU2GPU,
-    gpu_state: FractalGPUState<JuliaCPU2GPU>,
+    gpu_state: FractalGPUState,
     point_quadratic_idx: usize,
     point_sine_idx: usize,
     point_cosine_idx: usize,
@@ -539,7 +548,7 @@ impl Julia {
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
                 JuliaIterationType::Quadratic,
             ),
-            gpu_state: FractalGPUState::new(vks, bindless),
+            gpu_state: FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless),
             point_quadratic_idx: 0,
             point_sine_idx: 0,
             point_cosine_idx: 0,
@@ -562,22 +571,24 @@ impl Julia {
             } => {
                 self.params.c_x = -0.7f32;
                 self.params.c_y = -0.3f32;
-                self.params.core.reset();
+                self.params.core.reset::<JuliaCPU2GPU>();
             }
 
-            _ => self.params.core.input_handler(input_state),
+            _ => self.params.core.input_handler::<JuliaCPU2GPU>(input_state),
         }
     }
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
-        self.gpu_state.render(vks, context, &self.params);
+        let params_std140 = self.params.as_std140();
+        self.gpu_state
+            .render(vks, context, params_std140.as_bytes());
     }
 
     pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
         ui.window("Julia fractal parameters")
             .always_auto_resize(true)
             .build(|| {
-                self.params.core.do_ui(ui);
+                self.params.core.do_ui::<JuliaCPU2GPU>(ui);
 
                 ui.separator();
                 let mut c_ptr: [f32; 2] = [self.params.c_x, self.params.c_y];
@@ -591,8 +602,11 @@ impl Julia {
                 ui.text("Iteration:");
 
                 enum_iterator::all::<JuliaIterationType>().for_each(|it| {
-                    if ui.radio_button_bool(format!("{:?}", it), self.params.iteration == it) {
-                        self.params.iteration = it;
+                    if ui.radio_button_bool(
+                        format!("{:?}", it),
+                        JuliaIterationType::from(self.params.iteration) == it,
+                    ) {
+                        self.params.iteration = it as _;
 
                         //
                         // reset center + zoom
@@ -613,7 +627,7 @@ impl Julia {
 
                         self.params.c_x = center[0];
                         self.params.c_y = center[1];
-                        self.params.core.reset();
+                        self.params.core.reset::<JuliaCPU2GPU>();
                     }
                 });
 
@@ -631,7 +645,7 @@ impl Julia {
                     };
 
                 ui.separator();
-                match self.params.iteration {
+                match JuliaIterationType::from(self.params.iteration) {
                     JuliaIterationType::Quadratic => {
                         do_combo_interest_points(
                             "Interesting points to explore (quadratic)",
@@ -688,18 +702,20 @@ impl Julia {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence, num_enum::FromPrimitive)]
 #[repr(u32)]
 enum MandelbrotType {
+    #[default]
     Standard,
     BurningShip,
 }
 
-#[derive(Copy, Clone, Debug)]
-#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
 struct MandelbrotCPU2GPU {
-    core: FractalCore<MandelbrotCPU2GPU>,
-    ftype: MandelbrotType,
+    core: FractalCommonCore,
+    ftype: u32,
+    // palette_handle: u32,
+    // pallete_index: u32,
 }
 
 impl FractalCoreParams for MandelbrotCPU2GPU {
@@ -716,21 +732,31 @@ impl FractalCoreParams for MandelbrotCPU2GPU {
     const VERTEX_SHADER_MODULE: &'static str = "data/shaders/fractal.vert";
     const FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.frag";
     const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.bindless.frag";
+
+    fn ssbo_size() -> usize {
+        let mut sizer = crevice::std140::Sizer::new();
+        sizer.add::<FractalCommonCore>();
+        sizer.add::<u32>();
+
+        log::info!("Mandelbrot SSBO item length {}", sizer.len());
+
+        sizer.len()
+    }
 }
 
 pub struct Mandelbrot {
     params: MandelbrotCPU2GPU,
-    gpu_state: FractalGPUState<MandelbrotCPU2GPU>,
+    gpu_state: FractalGPUState,
 }
 
 impl Mandelbrot {
     pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
         Self {
             params: MandelbrotCPU2GPU {
-                core: FractalCore::default(),
-                ftype: MandelbrotType::Standard,
+                core: FractalCommonCore::new::<MandelbrotCPU2GPU>(),
+                ftype: MandelbrotType::Standard as _,
             },
-            gpu_state: FractalGPUState::new(vks, bindless),
+            gpu_state: FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless),
         }
     }
 
@@ -747,15 +773,20 @@ impl Mandelbrot {
                     },
                 ..
             } => {
-                self.params.core.reset();
+                self.params.core.reset::<MandelbrotCPU2GPU>();
             }
 
-            _ => self.params.core.input_handler(input_state),
+            _ => self
+                .params
+                .core
+                .input_handler::<MandelbrotCPU2GPU>(input_state),
         }
     }
 
     pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
-        self.gpu_state.render(vks, context, &self.params);
+        let params_std140 = self.params.as_std140();
+        self.gpu_state
+            .render(vks, context, params_std140.as_bytes());
     }
 
     pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
@@ -763,33 +794,33 @@ impl Mandelbrot {
             .always_auto_resize(true)
             .build(|| {
                 enum_iterator::all::<MandelbrotType>().for_each(|it| {
-                    if ui.radio_button_bool(format!("{:?}", it), self.params.ftype == it) {
-                        self.params.ftype = it;
-                        self.params.core.reset();
+                    if ui.radio_button_bool(
+                        format!("{:?}", it),
+                        MandelbrotType::from(self.params.ftype) == it,
+                    ) {
+                        self.params.ftype = it as _;
+                        self.params.core.reset::<MandelbrotCPU2GPU>();
                     }
                 });
 
-                self.params.core.do_ui(ui);
+                self.params.core.do_ui::<MandelbrotCPU2GPU>(ui);
             });
     }
 }
 
-struct FractalGPUState<T: FractalCoreParams + Copy> {
+struct FractalGPUState {
     pipeline: Pipeline,
     bindless_layout: PipelineLayout,
     ubo_params: UniqueBuffer,
+    ubo_size: usize,
     ubo_handle: BindlessResourceHandle,
     palettes: UniqueImage,
     palettes_view: UniqueImageView,
     sampler: UniqueSampler,
     palette_handle: BindlessResourceHandle,
-    _marker: std::marker::PhantomData<T>,
 }
 
-impl<T> FractalGPUState<T>
-where
-    T: FractalCoreParams + Copy,
-{
+impl FractalGPUState {
     fn make_palettes(vks: &mut VulkanState) -> (UniqueImage, UniqueImageView, UniqueSampler) {
         use enterpolation::{linear::ConstEquidistantLinear, Curve};
         use palette::{rgb, LinSrgb, Srgb};
@@ -865,14 +896,19 @@ where
         (palette, palette_view, sampler)
     }
 
-    fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Self {
-        let pipeline = Self::create_graphics_pipeline(&vks.ds, vks.renderpass, bindless);
+    fn new<T: FractalCoreParams>(
+        vks: &mut VulkanState,
+        bindless: &mut BindlessResourceSystem,
+    ) -> Self {
+        let pipeline = Self::create_graphics_pipeline::<T>(&vks.ds, vks.renderpass, bindless);
 
-        let ubo_params = UniqueBuffer::new::<T>(
+        let ubo_size = T::ssbo_size();
+        let ubo_params = UniqueBuffer::with_capacity(
             vks,
             BufferUsageFlags::STORAGE_BUFFER,
             MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
             vks.swapchain.max_frames as usize,
+            T::ssbo_size(),
         );
 
         let ubo_handle = bindless.register_ssbo(&vks.ds, &ubo_params);
@@ -884,35 +920,29 @@ where
             bindless_layout: bindless.bindless_pipeline_layout(),
             ubo_params,
             ubo_handle,
+            ubo_size,
             palettes,
             palettes_view,
             sampler,
             palette_handle,
-            _marker: std::marker::PhantomData::<T>,
         }
     }
 
-    fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext, gpu_data: &T) {
+    fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext, gpu_data: &[u8]) {
         let render_area = Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: context.fb_size,
         };
-
-        // let data = T {
-        //     palette: self.palette_handle.get_id(),
-        //     ..*gpu_data
-        // };
-
 
         //
         // copy params
         UniqueBufferMapping::new(
             &self.ubo_params,
             &vks.ds,
-            Some(size_of::<T>() * context.current_frame_id as usize),
-            Some(size_of::<T>()),
+            Some(self.ubo_params.aligned_item_size * context.current_frame_id as usize),
+            Some(self.ubo_params.aligned_item_size),
         )
-        .write_data(std::slice::from_ref(gpu_data));
+        .write_data(gpu_data);
 
         unsafe {
             vks.ds.device.cmd_set_viewport(
@@ -950,7 +980,7 @@ where
         }
     }
 
-    fn create_graphics_pipeline(
+    fn create_graphics_pipeline<T: FractalCoreParams>(
         ds: &VulkanDeviceState,
         renderpass: RenderPass,
         bindless: &BindlessResourceSystem,
