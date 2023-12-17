@@ -15,6 +15,8 @@ struct FractalCommonCore {
   float fymin;
   float fymax;
   uint escape_radius;
+  uint palette_handle;
+  uint palette_idx;
 };
 
 struct JuliaFractalParams {

@@ -1842,3 +1842,15 @@ impl BindlessResourceSystem {
         handle
     }
 }
+
+pub mod misc {
+    pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
+	use std::io::Write;
+	let mut f = std::fs::File::create(file).unwrap();
+
+	writeln!(&mut f, "P3 {width} {height} 255").unwrap();
+	pixels.chunks(4).for_each(|c| {
+	    writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
+	});
+    }
+}

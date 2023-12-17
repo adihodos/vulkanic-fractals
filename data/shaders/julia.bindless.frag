@@ -211,62 +211,67 @@ const uint J_ITERATION_SINE = 1;
 const uint J_ITERATION_COSINE = 2;
 const uint J_ITERATION_CUBIC = 3;
 
-float julia_quadratic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
-    uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
+struct JuliaResult {
+  uint iterations;
+  float smooth_color;
+};
 
-    while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
-        z = complex_add(complex_mul(z, z), c);
-        iterations += 1;
-        smooth_color += exp(-complex_mag(z));
-    }
+JuliaResult julia_quadratic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
+  uint iterations = 0;
+  float smooth_color = exp(-complex_mag(z));
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_add(complex_mul(z, z), c);
-        smooth_color += exp(-complex_mag(z));
-    }
+  while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
+    z = complex_add(complex_mul(z, z), c);
+    iterations += 1;
+    smooth_color += exp(-complex_mag(z));
+  }
 
-    return smooth_color;
+  for (uint i = 0; i < 2; ++i) {
+    z = complex_add(complex_mul(z, z), c);
+    smooth_color += exp(-complex_mag(z));
+  }
+
+  return JuliaResult(iterations, smooth_color);
 }
 
-float julia_cubic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
-    uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
+JuliaResult julia_cubic(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
+  uint iterations = 0;
+  float smooth_color = exp(-complex_mag(z));
 
-    while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
-        z = complex_add(complex_mul(complex_mul(z, z), z), c);
-        iterations += 1;
-        smooth_color += exp(-complex_mag(z));
-    }
+  while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
+    z = complex_add(complex_mul(complex_mul(z, z), z), c);
+    iterations += 1;
+    smooth_color += exp(-complex_mag(z));
+  }
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_add(complex_mul(complex_mul(z, z), z), c);
-        smooth_color += exp(-complex_mag(z));
-    }
+  for (uint i = 0; i < 2; ++i) {
+    z = complex_add(complex_mul(complex_mul(z, z), z), c);
+    smooth_color += exp(-complex_mag(z));
+  }
 
-    return smooth_color;
+  return JuliaResult(iterations, smooth_color);
 }
 
 
-float julia_cosine(in Complex z, in Complex c, in uint max_iterations) {
-    uint iterations = 0;
-    float smooth_color = exp(-complex_mag(z));
+JuliaResult julia_cosine(in Complex z, in Complex c, in uint max_iterations) {
+  uint iterations = 0;
+  float smooth_color = exp(-complex_mag(z));
 
-    while (abs(z.im) < 50.0 && (iterations < max_iterations)) {
+  while (abs(z.im) < 50.0 && (iterations < max_iterations)) {
+    z = complex_mul(c, complex_cosine(z));
+    iterations += 1;
+    smooth_color += exp(-complex_mag(z));
+  }
+
+    for (uint i = 0; i < 2; ++i) {
         z = complex_mul(c, complex_cosine(z));
-        iterations += 1;
         smooth_color += exp(-complex_mag(z));
     }
 
-    for (uint i = 0; i < 2; ++i) {
-        z = complex_mul(c, complex_cosine(z));
-        smooth_color += exp(-complex_mag(z));
-    }
-
-    return smooth_color;
+    return JuliaResult(iterations, smooth_color);
 }
 
-float julia_sine(in Complex z, in Complex c, in uint max_iterations) {
+JuliaResult julia_sine(in Complex z, in Complex c, in uint max_iterations) {
     uint iterations = 0;
     float smooth_color = exp(-complex_mag(z));
 
@@ -281,7 +286,7 @@ float julia_sine(in Complex z, in Complex c, in uint max_iterations) {
         smooth_color += exp(-complex_mag(z));
     }
 
-    return smooth_color;
+    return JuliaResult(iterations, smooth_color);
 }
 
 void main() {
@@ -295,27 +300,27 @@ void main() {
         gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
     );
 
-    float smoothing = 0.0;
+    JuliaResult res;
     switch (j_params.iteration_type) {
         case J_ITERATION_SINE:
-            smoothing = julia_sine(z, c, params.iterations);
+            res = julia_sine(z, c, params.iterations);
             break;
 
         case J_ITERATION_COSINE:
-            smoothing = julia_cosine(z, c, params.iterations);
+            res = julia_cosine(z, c, params.iterations);
             break;
 
         case J_ITERATION_CUBIC:
-            smoothing = julia_cubic(z, c, params.escape_radius, params.iterations);
+            res = julia_cubic(z, c, params.escape_radius, params.iterations);
             break;
 
         default:
         case J_ITERATION_QUADRATIC:
-            smoothing = julia_quadratic(z, c, params.escape_radius, params.iterations);
+            res = julia_quadratic(z, c, params.escape_radius, params.iterations);
             break;
     }
 
-    const float smoothing_factor = (smoothing / params.iterations);
+    const float smoothing_factor = (res.smooth_color / params.iterations);
 
     vec3 color = vec3(0.0);
 
@@ -325,7 +330,7 @@ void main() {
             break;
 
         case COLORING_LOG:
-            color = color_log(smoothing, params.iterations);
+            color = color_log(res.smooth_color, params.iterations);
             break;
 
         case COLORING_HSV:
@@ -341,7 +346,10 @@ void main() {
             break;
 
         case COLORING_PALETTE:
-            color = color_palette(smoothing_factor, params.iterations);
+            color = texture(
+			    g_GlobalColorPalette[nonuniformEXT(params.palette_handle)],
+			    vec2(float(res.iterations)/float(params.iterations), float(params.palette_idx))).rgb;
+	      //color_palette(smoothing_factor, params.iterations);
             break;
 
     }

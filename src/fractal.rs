@@ -70,10 +70,12 @@ struct FractalCommonCore {
     fymin: f32,
     fymax: f32,
     escape_radius: u32,
+    palette_handle: u32,
+    palette_idx: u32,
 }
 
 impl FractalCommonCore {
-    fn new<T: FractalCoreParams>() -> Self {
+    fn new<T: FractalCoreParams>(palette_handle: u32) -> Self {
         use crevice::glsl::GlslStruct;
         log::info!("FractalCore GLSL def {}", Self::glsl_definition());
         Self {
@@ -89,6 +91,8 @@ impl FractalCommonCore {
             fymin: -T::FRACTAL_HALF_HEIGHT,
             fymax: T::FRACTAL_HALF_HEIGHT,
             escape_radius: T::ESC_RADIUS_MIN,
+            palette_handle,
+            palette_idx: 0u32,
         }
     }
 
@@ -249,7 +253,8 @@ impl FractalCommonCore {
         *self = Self {
             screen_width: self.screen_width,
             screen_height: self.screen_height,
-            ..Self::new::<T>()
+            palette_idx: self.palette_idx,
+            ..Self::new::<T>(self.palette_handle)
         };
     }
 
@@ -305,7 +310,10 @@ impl FractalCommonCore {
         let cursor_pos = ui.io().mouse_pos;
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
-            format!("Cursor position: ({:.2}, {:.2})", cursor_pos[0], cursor_pos[1]),
+            format!(
+                "Cursor position: ({:.2}, {:.2})",
+                cursor_pos[0], cursor_pos[1]
+            ),
         );
 
         ui.text_colored(
@@ -374,23 +382,23 @@ impl FractalCoreParams for JuliaCPU2GPU {
     }
 }
 
-impl std::default::Default for JuliaCPU2GPU {
-    fn default() -> Self {
-        Self {
-            c_x: -0.7f32,
-            c_y: -0.3f32,
-            iteration: JuliaIterationType::Quadratic as u32,
-            core: FractalCommonCore::new::<JuliaCPU2GPU>(),
-        }
-    }
-}
+// impl std::default::Default for JuliaCPU2GPU {
+//     fn default() -> Self {
+//         Self {
+//             c_x: -0.7f32,
+//             c_y: -0.3f32,
+//             iteration: JuliaIterationType::Quadratic as u32,
+//             core: FractalCommonCore::new::<JuliaCPU2GPU>(),
+//         }
+//     }
+// }
 
 impl JuliaCPU2GPU {
-    fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType) -> JuliaCPU2GPU {
+    fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType, palette_handle: u32) -> JuliaCPU2GPU {
         use crevice::glsl::GlslStruct;
         log::info!("Julia GLSL {}", Self::glsl_definition());
         Self {
-            core: FractalCommonCore::new::<JuliaCPU2GPU>(),
+            core: FractalCommonCore::new::<JuliaCPU2GPU>(palette_handle),
             c_x,
             c_y,
             iteration: iteration as _,
@@ -542,13 +550,15 @@ impl Julia {
     ];
 
     pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Julia {
+        let gpu_state = FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless);
         Self {
             params: JuliaCPU2GPU::new(
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
                 JuliaIterationType::Quadratic,
+                gpu_state.palette_handle.get_id(),
             ),
-            gpu_state: FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless),
+            gpu_state,
             point_quadratic_idx: 0,
             point_sine_idx: 0,
             point_cosine_idx: 0,
@@ -751,12 +761,15 @@ pub struct Mandelbrot {
 
 impl Mandelbrot {
     pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
+        let gpu_state = FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless);
         Self {
             params: MandelbrotCPU2GPU {
-                core: FractalCommonCore::new::<MandelbrotCPU2GPU>(),
+                core: FractalCommonCore::new::<MandelbrotCPU2GPU>(
+                    gpu_state.palette_handle.get_id(),
+                ),
                 ftype: MandelbrotType::Standard as _,
             },
-            gpu_state: FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless),
+            gpu_state,
         }
     }
 
@@ -835,10 +848,14 @@ impl FractalGPUState {
             .take(512)
             .map(|c| {
                 let a: Srgb<u8> = c.into();
-                a.into_u32::<rgb::channels::Rgba>()
+                a.into_u32::<rgb::channels::Abgr>()
                 //
             })
             .collect::<Vec<_>>();
+
+        let pixels =
+            unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) };
+        crate::vulkan_renderer::misc::write_ppm("urmom.ppm", 512, 1, pixels);
 
         use ash::vk::ImageCreateInfo;
         let palette = UniqueImage::from_bytes(
