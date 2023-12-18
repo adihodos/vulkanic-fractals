@@ -195,7 +195,12 @@ vec3 color_palette(in float n, in float max_iterations) {
    return palette(n, a, b, c, d);
 }
 
-float mandelbrot_standard(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
+struct MandelbrotResult {
+  float mu;
+  uint iterations;
+};
+
+MandelbrotResult mandelbrot_standard(in Complex z, in Complex c, in float escape_radius, in uint max_iterations) {
     uint iterations = 0;
 
     while ((complex_mag_squared(z) <= (escape_radius * escape_radius)) && (iterations < max_iterations)) {
@@ -210,10 +215,10 @@ float mandelbrot_standard(in Complex z, in Complex c, in float escape_radius, in
     float modulus = complex_mag(z);
     float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
 
-    return mu;
+    return MandelbrotResult(mu, iterations - 2);
 }
 
-float mandelbrot_burning_ship(in Complex z, in Complex c, in uint max_iterations) {
+MandelbrotResult mandelbrot_burning_ship(in Complex z, in Complex c, in uint max_iterations) {
     uint iterations = 0;
 
     while (complex_mag_squared(z) <= 10.0 && iterations < max_iterations) {
@@ -226,7 +231,7 @@ float mandelbrot_burning_ship(in Complex z, in Complex c, in uint max_iterations
     float modulus = complex_mag(z);
     float mu = iterations - (log2 (log2(modulus)))/ log2(2.0);
 
-    return mu;
+    return MandelbrotResult(mu, iterations);
 }
 
 void main() {
@@ -241,23 +246,23 @@ void main() {
 
   Complex z = Complex(0.0, 0.0);
 
-  float mu = 0.0;
+  MandelbrotResult res;
 
   switch (mandel_params.ftype) {
   case M_TYPE_STANDARD:
-    mu = mandelbrot_standard(z, c, params.escape_radius, params.iterations);
+    res = mandelbrot_standard(z, c, params.escape_radius, params.iterations);
     break;
 
   case M_TYPE_BURNING_SHIP:
-    mu = mandelbrot_burning_ship(z, c, params.iterations);
+    res = mandelbrot_burning_ship(z, c, params.iterations);
     break;
 
   default:
     break;
   }
 
-  float mu2 = mu;
-  mu = sqrt(mu / params.iterations);
+  float mu2 = res.mu;
+  float mu = sqrt(mu2 / params.iterations);
 
   vec3 color = vec3(0.0);
 
@@ -283,7 +288,8 @@ void main() {
     break;
 
   case COLORING_PALETTE:
-    color = color_palette(mu, params.iterations);
+    color = texture(g_GlobalColorPalette[nonuniformEXT(params.palette_handle)],
+		    vec2(float(res.mu) / float(params.iterations), params.palette_idx)).rgb;
     break;
   }
 
