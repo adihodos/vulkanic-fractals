@@ -4,6 +4,7 @@ use std::{
     mem::size_of,
 };
 
+use ash::prelude::*;
 use ash::{
     extensions::ext::DebugUtils,
     vk::{
@@ -23,14 +24,17 @@ use ash::{
         ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
         InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags,
         MemoryPropertyFlags, MemoryRequirements, PhysicalDevice, PhysicalDeviceFeatures,
-        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceType,
-        PhysicalDeviceVulkan12Features, Pipeline, PipelineBindPoint, PipelineCache, PipelineLayout,
-        PipelineLayoutCreateInfo, PipelineStageFlags, PresentInfoKHR, PresentModeKHR,
-        PushConstantRange, Queue, RenderPass, RenderPassCreateInfo, SampleCountFlags, Sampler,
-        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
-        ShaderStageFlags, SharingMode, SubmitInfo, SubpassDescription, SurfaceFormatKHR,
-        SurfaceKHR, SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        WriteDescriptorSet, WHOLE_SIZE,
+        PhysicalDeviceFeatures2, PhysicalDeviceMemoryProperties, PhysicalDeviceProperties,
+        PhysicalDeviceProperties2, PhysicalDeviceType, PhysicalDeviceVulkan11Features,
+        PhysicalDeviceVulkan11Properties, PhysicalDeviceVulkan12Features,
+        PhysicalDeviceVulkan12Properties, PhysicalDeviceVulkan13Features,
+        PhysicalDeviceVulkan13Properties, Pipeline, PipelineBindPoint, PipelineCache,
+        PipelineLayout, PipelineLayoutCreateInfo, PipelineStageFlags, PresentInfoKHR,
+        PresentModeKHR, PushConstantRange, Queue, RenderPass, RenderPassCreateInfo,
+        SampleCountFlags, Sampler, SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule,
+        ShaderModuleCreateInfo, ShaderStageFlags, SharingMode, SubmitInfo, SubpassDescription,
+        SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR,
+        SwapchainKHR, WriteDescriptorSet, WHOLE_SIZE,
     },
     Device, Entry, Instance,
 };
@@ -362,11 +366,19 @@ impl UniqueBuffer {
         let align_size = if memory_flags.intersects(MemoryPropertyFlags::HOST_VISIBLE)
             && !memory_flags.intersects(MemoryPropertyFlags::HOST_COHERENT)
         {
-            ds.ds.physical.properties.limits.non_coherent_atom_size
+            ds.ds
+                .physical
+                .properties
+                .base
+                .properties
+                .limits
+                .non_coherent_atom_size
         } else {
             if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
                 ds.ds
                     .physical
+                    .properties
+                    .base
                     .properties
                     .limits
                     .min_uniform_buffer_offset_alignment
@@ -376,16 +388,26 @@ impl UniqueBuffer {
                 ds.ds
                     .physical
                     .properties
+                    .base
+                    .properties
                     .limits
                     .min_texel_buffer_offset_alignment
             } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
                 ds.ds
                     .physical
                     .properties
+                    .base
+                    .properties
                     .limits
                     .min_storage_buffer_offset_alignment
             } else {
-                ds.ds.physical.properties.limits.non_coherent_atom_size
+                ds.ds
+                    .physical
+                    .properties
+                    .base
+                    .properties
+                    .limits
+                    .non_coherent_atom_size
             }
         } as usize;
 
@@ -592,11 +614,11 @@ pub struct VulkanState {
 
 impl VulkanState {
     pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
-        &self.ds.physical.properties.limits
+        &self.ds.physical.properties.base.properties.limits
     }
 
     pub fn features(&self) -> &PhysicalDeviceFeatures {
-        &self.ds.physical.features
+        &self.ds.physical.features.base.features
     }
 
     pub fn wait_all_idle(&mut self) {
@@ -736,12 +758,25 @@ impl std::ops::Drop for VulkanState {
     fn drop(&mut self) {}
 }
 
+pub struct DeviceProperties {
+    pub base: PhysicalDeviceProperties2,
+    pub vk11: PhysicalDeviceVulkan11Properties,
+    pub vk12: PhysicalDeviceVulkan12Properties,
+    pub vk13: PhysicalDeviceVulkan13Properties,
+}
+
+pub struct DeviceFeatures {
+    pub base: PhysicalDeviceFeatures2,
+    pub vk11: PhysicalDeviceVulkan11Features,
+    pub vk12: PhysicalDeviceVulkan12Features,
+    pub vk13: PhysicalDeviceVulkan13Features,
+}
+
 pub struct VulkanPhysicalDeviceState {
     pub device: PhysicalDevice,
-    pub properties: PhysicalDeviceProperties,
+    pub properties: DeviceProperties,
     pub memory_properties: PhysicalDeviceMemoryProperties,
-    pub features: PhysicalDeviceFeatures,
-    pub vk12_features: PhysicalDeviceVulkan12Features,
+    pub features: DeviceFeatures,
     pub queue_family_id: u32,
 }
 
@@ -761,11 +796,9 @@ pub struct VulkanSurfaceKHRState {
 
 pub struct VulkanSurfaceState {
     pub khr: VulkanSurfaceKHRState,
+    pub caps: ash::vk::SurfaceCapabilitiesKHR,
     pub fmt: SurfaceFormatKHR,
     pub present_mode: PresentModeKHR,
-    pub transform: SurfaceTransformFlagsKHR,
-    pub image_count: u32,
-    pub image_size: Extent2D,
 }
 
 pub struct VulkanSwapchainState {
@@ -785,6 +818,7 @@ pub struct VulkanSwapchainState {
 impl VulkanSwapchainState {
     pub fn create_swapchain(
         ext: &ash::extensions::khr::Swapchain,
+        previous_swapchain: Option<SwapchainKHR>,
         surface: &VulkanSurfaceState,
         device: &Device,
         renderpass: RenderPass,
@@ -794,16 +828,17 @@ impl VulkanSwapchainState {
             ext.create_swapchain(
                 &SwapchainCreateInfoKHR::builder()
                     .surface(surface.khr.surface)
-                    .min_image_count(surface.image_count)
+                    .min_image_count(surface.caps.max_image_count)
                     .image_format(surface.fmt.format)
                     .image_color_space(surface.fmt.color_space)
-                    .image_extent(surface.image_size)
+                    .image_extent(surface.caps.current_extent)
                     .image_array_layers(1)
                     .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
                     .image_sharing_mode(SharingMode::EXCLUSIVE)
                     .queue_family_indices(&[queue])
                     .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
-                    .pre_transform(surface.transform)
+                    .pre_transform(surface.caps.current_transform)
+                    .old_swapchain(previous_swapchain.unwrap_or_else(|| SwapchainKHR::null()))
                     .present_mode(surface.present_mode),
                 None,
             )
@@ -851,8 +886,8 @@ impl VulkanSwapchainState {
                         &FramebufferCreateInfo::builder()
                             .render_pass(renderpass)
                             .attachments(&[img_view])
-                            .width(surface.image_size.width)
-                            .height(surface.image_size.height)
+                            .width(surface.caps.current_extent.width)
+                            .height(surface.caps.current_extent.height)
                             .layers(1),
                         None,
                     )
@@ -902,11 +937,13 @@ impl VulkanSwapchainState {
         instance: &Instance,
         ds: &VulkanDeviceState,
         renderpass: RenderPass,
+        previous_swapchain: Option<SwapchainKHR>,
     ) -> Option<VulkanSwapchainState> {
         let ext = ash::extensions::khr::Swapchain::new(instance, &ds.device);
 
         let (swapchain, images, image_views, framebuffers) = Self::create_swapchain(
             &ext,
+            previous_swapchain,
             &ds.surface,
             &ds.device,
             renderpass,
@@ -914,7 +951,7 @@ impl VulkanSwapchainState {
         );
 
         let (work_fences, sem_work_done, sem_img_available) =
-            Self::create_sync_objects(&ds.device, ds.surface.image_count);
+            Self::create_sync_objects(&ds.device, ds.surface.caps.max_image_count);
 
         Some(VulkanSwapchainState {
             ext,
@@ -929,12 +966,12 @@ impl VulkanSwapchainState {
                 ds.device.allocate_command_buffers(
                     &CommandBufferAllocateInfo::builder()
                         .command_pool(ds.cmd_pool)
-                        .command_buffer_count(ds.surface.image_count),
+                        .command_buffer_count(ds.surface.caps.max_image_count),
                 )
             }
             .expect("Failed to allocate command buffers"),
             image_index: 0,
-            max_frames: ds.surface.image_count,
+            max_frames: ds.surface.caps.max_image_count,
         })
     }
 
@@ -952,12 +989,17 @@ impl VulkanSwapchainState {
             self.image_views.iter().for_each(|iv| {
                 ds.device.destroy_image_view(*iv, None);
             });
-
-            self.ext.destroy_swapchain(self.swapchain, None);
         }
+
+        let recycled_swapchain = {
+            let mut swapchain = SwapchainKHR::null();
+            std::mem::swap(&mut self.swapchain, &mut swapchain);
+            Some(swapchain)
+        };
 
         let (swapchain, images, image_views, framebuffers) = Self::create_swapchain(
             &self.ext,
+            recycled_swapchain,
             &ds.surface,
             &ds.device,
             renderpass,
@@ -1051,6 +1093,7 @@ impl VulkanState {
     fn pick_device(
         instance: &Instance,
         surface: VulkanSurfaceKHRState,
+        screen_size: (u32, u32),
     ) -> Option<VulkanDeviceState> {
         let phys_devices = unsafe { instance.enumerate_physical_devices() }
             .expect("Failed to query physical devices");
@@ -1071,11 +1114,60 @@ impl VulkanState {
                 continue;
             }
 
-            let mut feat_vk12 = ash::vk::PhysicalDeviceVulkan12Features::default();
-            let mut pdf2 = ash::vk::PhysicalDeviceFeatures2::builder().push_next(&mut feat_vk12);
-            unsafe {
+            let (phys_dev_props2, props_vk11, props_vk12, props_vk13) = unsafe {
+                let mut props_vk11 = ash::vk::PhysicalDeviceVulkan11Properties::default();
+                let mut props_vk12 = ash::vk::PhysicalDeviceVulkan12Properties::default();
+                let mut props_vk13 = ash::vk::PhysicalDeviceVulkan13Properties::default();
+
+                let mut phys_dev_props2 = ash::vk::PhysicalDeviceProperties2::builder()
+                    .push_next(&mut props_vk11)
+                    .push_next(&mut props_vk12)
+                    .push_next(&mut props_vk13)
+                    .build();
+
+                instance.get_physical_device_properties2(pd, &mut phys_dev_props2);
+                (phys_dev_props2, props_vk11, props_vk12, props_vk13)
+            };
+
+            let phys_dev_memory_props = unsafe {
+                let mut props = ash::vk::PhysicalDeviceMemoryProperties2::default();
+                instance.get_physical_device_memory_properties2(pd, &mut props);
+                props
+            };
+
+            log::info!("{:?}", phys_dev_memory_props);
+
+            log::info!(
+                "{:?}\n{:?}\n{:?}\n{:?}",
+                phys_dev_props2.properties,
+                props_vk11,
+                props_vk12,
+                props_vk13
+            );
+
+            let (phys_dev_features2, f_vk11, f_vk12, f_vk13) = unsafe {
+                let mut f_vk11 = ash::vk::PhysicalDeviceVulkan11Features::default();
+                let mut f_vk12 = ash::vk::PhysicalDeviceVulkan12Features::default();
+                let mut f_vk13 = ash::vk::PhysicalDeviceVulkan13Features::default();
+
+                let mut pdf2 = ash::vk::PhysicalDeviceFeatures2::builder()
+                    .push_next(&mut f_vk11)
+                    .push_next(&mut f_vk12)
+                    .push_next(&mut f_vk13)
+                    .build();
+
                 instance.get_physical_device_features2(pd, &mut pdf2);
-            }
+
+                (pdf2, f_vk11, f_vk12, f_vk13)
+            };
+
+            log::info!(
+                "{:?}\n{:?}\n{:?}\n{:?}",
+                phys_dev_features2.features,
+                f_vk11,
+                f_vk12,
+                f_vk13
+            );
 
             let pd_features = unsafe { instance.get_physical_device_features(pd) };
 
@@ -1087,9 +1179,9 @@ impl VulkanState {
                 continue;
             }
 
-            if feat_vk12.descriptor_binding_partially_bound == 0
-                || feat_vk12.descriptor_indexing == 0
-                || feat_vk12.draw_indirect_count == 0
+            if f_vk12.descriptor_binding_partially_bound == 0
+                || f_vk12.descriptor_indexing == 0
+                || f_vk12.draw_indirect_count == 0
             {
                 log::info!(
                     "Rejecting device {} (no descriptor partially bound/descriptor indexing/draw indirect count)",
@@ -1138,12 +1230,9 @@ impl VulkanState {
                 continue;
             }
 
-            let surface_caps = unsafe {
-                surface
-                    .ext
-                    .get_physical_device_surface_capabilities(pd, surface.surface)
-            }
-            .expect("Failed to query device surface caps");
+            let surface_caps =
+                Self::get_surface_capabilities(pd, surface.surface, &surface.ext, screen_size)
+                    .expect("Failed to query device surface caps");
 
             if !surface_caps
                 .supported_usage_flags
@@ -1204,23 +1293,9 @@ impl VulkanState {
                 continue;
             }
 
-            let image_count = if surface_caps.max_image_count > 0 {
-                (surface_caps.min_image_count + 1).max(surface_caps.max_image_count)
-            } else {
-                surface_caps.min_image_count + 1
-            };
-
-            let image_size = if surface_caps.current_extent.width == 0xFFFFFFFF {
-                todo!("Handle this case");
-            } else {
-                surface_caps.current_extent
-            };
-
             surface_state = Some(VulkanSurfaceState {
                 khr: surface,
-                image_count,
-                image_size,
-                transform: surface_caps.current_transform,
+                caps: surface_caps,
                 fmt: maybe_surface_format.unwrap(),
                 present_mode: maybe_present_mode.unwrap(),
             });
@@ -1229,11 +1304,44 @@ impl VulkanState {
 
             phys_device = Some(VulkanPhysicalDeviceState {
                 device: pd,
-                properties: pd_properties,
-                features: pd_features,
+                properties: DeviceProperties {
+                    base: ash::vk::PhysicalDeviceProperties2 {
+                        p_next: std::ptr::null_mut(),
+                        ..phys_dev_props2
+                    },
+                    vk11: ash::vk::PhysicalDeviceVulkan11Properties {
+                        p_next: std::ptr::null_mut(),
+                        ..props_vk11
+                    },
+                    vk12: ash::vk::PhysicalDeviceVulkan12Properties {
+                        p_next: std::ptr::null_mut(),
+                        ..props_vk12
+                    },
+                    vk13: ash::vk::PhysicalDeviceVulkan13Properties {
+                        p_next: std::ptr::null_mut(),
+                        ..props_vk13
+                    },
+                },
+                features: DeviceFeatures {
+                    base: ash::vk::PhysicalDeviceFeatures2 {
+                        p_next: std::ptr::null_mut(),
+                        ..phys_dev_features2
+                    },
+                    vk11: ash::vk::PhysicalDeviceVulkan11Features {
+                        p_next: std::ptr::null_mut(),
+                        ..f_vk11
+                    },
+                    vk12: ash::vk::PhysicalDeviceVulkan12Features {
+                        p_next: std::ptr::null_mut(),
+                        ..f_vk12
+                    },
+                    vk13: ash::vk::PhysicalDeviceVulkan13Features {
+                        p_next: std::ptr::null_mut(),
+                        ..f_vk13
+                    },
+                },
                 queue_family_id: queue_id,
                 memory_properties,
-                vk12_features: feat_vk12,
             });
 
             break;
@@ -1248,14 +1356,22 @@ impl VulkanState {
 
         //
         // create logical device
-        let enabled_device_extensions = [b"VK_KHR_swapchain\0".as_ptr() as *const c_char];
-        let mut vk12enabled = phys_device.vk12_features;
         let device = unsafe {
+            let mut f_vk11 = phys_device.features.vk11;
+            let mut f_vk12 = phys_device.features.vk12;
+            let mut f_vk13 = phys_device.features.vk13;
+
             instance.create_device(
                 phys_device.device,
                 &DeviceCreateInfo::builder()
-                    .push_next(&mut vk12enabled)
-                    .enabled_extension_names(&enabled_device_extensions)
+                    .push_next(&mut f_vk11)
+                    .push_next(&mut f_vk12)
+                    .push_next(&mut f_vk13)
+                    .enabled_extension_names(&[
+                        ash::extensions::khr::Swapchain::name().as_ptr(),
+                        ash::extensions::khr::DynamicRendering::name().as_ptr(),
+                        ash::extensions::ext::DescriptorBuffer::name().as_ptr(),
+                    ])
                     .queue_create_infos(&[DeviceQueueCreateInfo::builder()
                         .queue_family_index(phys_device.queue_family_id)
                         .queue_priorities(&[1f32])
@@ -1301,7 +1417,7 @@ impl VulkanState {
         })
     }
 
-    pub fn new(wsi: WindowSystemIntegration) -> Option<VulkanState> {
+    pub fn new(wsi: WindowSystemIntegration, window_size: (u32, u32)) -> Option<VulkanState> {
         let entry = Entry::linked();
         let instance_ver = entry
             .try_enumerate_instance_version()
@@ -1340,18 +1456,13 @@ impl VulkanState {
 
         let enabled_layers = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const c_char];
 
-        #[cfg(target_os = "linux")]
         let enabled_instance_extensions = [
-            b"VK_KHR_surface\0".as_ptr() as *const c_char,
-            b"VK_EXT_debug_utils\0".as_ptr() as *const c_char,
-            b"VK_KHR_xlib_surface\0".as_ptr() as *const c_char,
-        ];
-
-        #[cfg(target_os = "windows")]
-        let enabled_instance_extensions = [
-            b"VK_KHR_surface\0".as_ptr() as *const c_char,
-            b"VK_EXT_debug_utils\0".as_ptr() as *const c_char,
-            b"VK_KHR_win32_surface\0".as_ptr() as *const c_char,
+            ash::extensions::khr::Surface::name().as_ptr(),
+            #[cfg(target_os = "linux")]
+            ash::extensions::khr::XlibSurface::name().as_ptr(),
+            #[cfg(target_os = "windows")]
+            ash::extensions::khr::Win32Surface::name().as_ptr(),
+            ash::extensions::ext::DebugUtils::name().as_ptr(),
         ];
 
         unsafe {
@@ -1391,12 +1502,12 @@ impl VulkanState {
         let surface_state = Self::create_surface(&entry, &instance, wsi);
 
         let device_state =
-            Self::pick_device(&instance, surface_state).expect("Faile to pick device");
+            Self::pick_device(&instance, surface_state, window_size).expect("Faile to pick device");
 
         let renderpass = Self::create_renderpass(&device_state);
 
         let swapchain_state =
-            VulkanSwapchainState::new(&instance, &device_state, renderpass).unwrap();
+            VulkanSwapchainState::new(&instance, &device_state, renderpass, None).unwrap();
 
         let resource_loader = ResourceLoadingState::new(&device_state);
 
@@ -1460,19 +1571,36 @@ impl VulkanState {
         //
         // acquire next image
 
-        let (swapchain_available_img_index, suboptimal) = unsafe {
-            self.swapchain.ext.acquire_next_image(
-                self.swapchain.swapchain,
-                u64::MAX,
-                self.swapchain.sem_img_available[self.swapchain.image_index as usize],
-                Fence::null(),
-            )
-        }
-        .expect("Acquire image error ...");
-
-        if suboptimal {
-            todo!("handle swapchain suboptimal!");
-        }
+        let swapchain_available_img_index = 'acquire_next_image: loop {
+            match unsafe {
+                self.swapchain.ext.acquire_next_image(
+                    self.swapchain.swapchain,
+                    u64::MAX,
+                    self.swapchain.sem_img_available[self.swapchain.image_index as usize],
+                    Fence::null(),
+                )
+            } {
+                Err(e) => {
+                    if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
+                        log::info!("Swapchain out of date, recreating ...");
+                        self.handle_surface_size_changed(fb_size);
+                        self.swapchain.handle_suboptimal(&self.ds, self.renderpass);
+                    } else {
+                        log::error!("Present error: {:?}", e);
+                        todo!("Handle this ...");
+                    }
+                }
+                Ok((swapchain_available_img_index, suboptimal)) => {
+                    if suboptimal {
+                        log::info!("Swapchain suboptimal, recreating ...");
+                        self.handle_surface_size_changed(fb_size);
+                        self.swapchain.handle_suboptimal(&self.ds, self.renderpass);
+                    } else {
+                        break 'acquire_next_image swapchain_available_img_index;
+                    }
+                }
+            }
+        };
 
         unsafe {
             self.ds
@@ -1511,7 +1639,7 @@ impl VulkanState {
         }
     }
 
-    pub fn end_rendering(&mut self) {
+    pub fn end_rendering(&mut self, framebuffer_size: Extent2D) {
         //
         // end command buffer + renderpass
         unsafe {
@@ -1555,16 +1683,17 @@ impl VulkanState {
                 Err(e) => {
                     if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
                         log::info!("Swapchain out of date, recreating ...");
-                        self.handle_surface_size_changed();
+                        self.handle_surface_size_changed(framebuffer_size);
                         self.swapchain.handle_suboptimal(&self.ds, self.renderpass);
                     } else {
+                        log::error!("Present error: {:?}", e);
                         todo!("Handle this ...");
                     }
                 }
                 Ok(suboptimal) => {
                     if suboptimal {
                         log::info!("Swapchain suboptimal, recreating ...");
-                        self.handle_surface_size_changed();
+                        self.handle_surface_size_changed(framebuffer_size);
                         self.swapchain.handle_suboptimal(&self.ds, self.renderpass);
                     } else {
                         self.swapchain.image_index =
@@ -1575,23 +1704,59 @@ impl VulkanState {
         }
     }
 
-    pub fn handle_surface_size_changed(&mut self) {
-        let surface_caps = unsafe {
-            self.ds
-                .surface
-                .khr
-                .ext
-                .get_physical_device_surface_capabilities(
-                    self.ds.physical.device,
-                    self.ds.surface.khr.surface,
-                )
-        }
-        .expect("Failed to query surface caps");
+    pub fn handle_surface_size_changed(&mut self, surface_size: Extent2D) {
+        self.ds.surface.caps = Self::get_surface_capabilities(
+            self.ds.physical.device,
+            self.ds.surface.khr.surface,
+            &self.ds.surface.khr.ext,
+            (surface_size.width, surface_size.height),
+        )
+        .expect("Failed to query surface capabilities");
+        log::info!("Surface extent {:?}", self.ds.surface.caps.current_extent);
+    }
 
-        log::info!("Surface extent {:?}", surface_caps.current_extent);
+    fn get_surface_capabilities(
+        phys_device: PhysicalDevice,
+        surface: SurfaceKHR,
+        surface_ext: &ash::extensions::khr::Surface,
+        screen_size: (u32, u32),
+    ) -> VkResult<ash::vk::SurfaceCapabilitiesKHR> {
+        unsafe { surface_ext.get_physical_device_surface_capabilities(phys_device, surface) }.map(
+            |surface_caps| {
+                let current_extent = if surface_caps.current_extent.width == 0xffffffff
+                    || surface_caps.current_extent.height == 0xffffffff
+                {
+                    //
+                    // width and height determined by the swapchain's extent
+                    ash::vk::Extent2D {
+                        width: screen_size.0,
+                        height: screen_size.1,
+                    }
+                } else {
+                    surface_caps.current_extent
+                };
 
-        assert_ne!(surface_caps.current_extent.width, 0xFFFFFFFF);
-        self.ds.surface.image_size = surface_caps.current_extent;
+                let max_image_count = if surface_caps.max_image_count == 0 {
+                    //
+                    // no limit on the number of images
+                    (surface_caps.min_image_count as f32 * 1.5f32).ceil() as u32
+                } else {
+                    (surface_caps.min_image_count + 2).min(surface_caps.max_image_count)
+                };
+
+                log::info!(
+                    "Surface caps: extent: {:?}, image count {}",
+                    current_extent,
+                    max_image_count
+                );
+
+                ash::vk::SurfaceCapabilitiesKHR {
+                    max_image_count,
+                    current_extent,
+                    ..surface_caps
+                }
+            },
+        )
     }
 }
 
@@ -1845,12 +2010,12 @@ impl BindlessResourceSystem {
 
 pub mod misc {
     pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
-	use std::io::Write;
-	let mut f = std::fs::File::create(file).unwrap();
+        use std::io::Write;
+        let mut f = std::fs::File::create(file).unwrap();
 
-	writeln!(&mut f, "P3 {width} {height} 255").unwrap();
-	pixels.chunks(4).for_each(|c| {
-	    writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
-	});
+        writeln!(&mut f, "P3 {width} {height} 255").unwrap();
+        pixels.chunks(4).for_each(|c| {
+            writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
+        });
     }
 }

@@ -76,8 +76,6 @@ struct FractalCommonCore {
 
 impl FractalCommonCore {
     fn new<T: FractalCoreParams>(palette_handle: u32) -> Self {
-        use crevice::glsl::GlslStruct;
-        log::info!("FractalCore GLSL def {}", Self::glsl_definition());
         Self {
             screen_width: 1024,
             screen_height: 1024,
@@ -297,7 +295,8 @@ impl FractalCommonCore {
         self.iterations = iterations;
 
         ui.separator();
-        ui.label_text("", "Info");
+        ui.text_colored([0.0f32, 1.0f32, 0.0f32, 1.0f32], "::: Info :::");
+        ui.separator();
 
         ui.text_colored(
             [1f32, 0f32, 0f32, 1f32],
@@ -594,121 +593,117 @@ impl Julia {
             .render(vks, context, params_std140.as_bytes());
     }
 
-    pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
-        ui.window("Julia fractal parameters")
-            .always_auto_resize(true)
-            .build(|| {
-                self.params.core.do_ui::<JuliaCPU2GPU>(ui);
+    pub fn do_ui(&mut self, ui: &imgui::Ui) {
+        self.params.core.do_ui::<JuliaCPU2GPU>(ui);
 
-                ui.separator();
-                let mut c_ptr: [f32; 2] = [self.params.c_x, self.params.c_y];
+        ui.separator();
+        let mut c_ptr: [f32; 2] = [self.params.c_x, self.params.c_y];
 
-                if ui.input_float2("C point", &mut c_ptr).build() {
-                    self.params.c_x = c_ptr[0];
-                    self.params.c_y = c_ptr[1];
-                }
+        if ui.input_float2("C point", &mut c_ptr).build() {
+            self.params.c_x = c_ptr[0];
+            self.params.c_y = c_ptr[1];
+        }
 
-                ui.separator();
-                ui.text("Iteration:");
+        ui.separator();
+        ui.text("Iteration:");
 
-                enum_iterator::all::<JuliaIterationType>().for_each(|it| {
-                    if ui.radio_button_bool(
-                        format!("{:?}", it),
-                        JuliaIterationType::from(self.params.iteration) == it,
-                    ) {
-                        self.params.iteration = it as _;
+        enum_iterator::all::<JuliaIterationType>().for_each(|it| {
+            if ui.radio_button_bool(
+                format!("{:?}", it),
+                JuliaIterationType::from(self.params.iteration) == it,
+            ) {
+                self.params.iteration = it as _;
 
-                        //
-                        // reset center + zoom
-                        let center = match it {
-                            JuliaIterationType::Quadratic => {
-                                &Self::INTERESTING_POINTS_QUADRATIC[self.point_quadratic_idx].coords
-                            }
-                            JuliaIterationType::Cosine => {
-                                &Self::INTERESTING_POINTS_COSINE[self.point_cosine_idx].coords
-                            }
-                            JuliaIterationType::Sine => {
-                                &Self::INTERESTING_POINTS_SINE[self.point_sine_idx].coords
-                            }
-                            JuliaIterationType::Cubic => {
-                                &Self::INTERESTING_POINTS_CUBIC[self.point_cubic_idx].coords
-                            }
-                        };
-
-                        self.params.c_x = center[0];
-                        self.params.c_y = center[1];
-                        self.params.core.reset::<JuliaCPU2GPU>();
-                    }
-                });
-
-                let do_combo_interest_points =
-                    |label: &str, sel_idx: usize, points: &[InterestingPoint]| {
-                        let mut pt_idx = sel_idx;
-
-                        if ui.combo(label, &mut pt_idx, points, |pt_coords| {
-                            std::borrow::Cow::Borrowed(&pt_coords.desc)
-                        }) {
-                            Some(pt_idx)
-                        } else {
-                            None
-                        }
-                    };
-
-                ui.separator();
-                match JuliaIterationType::from(self.params.iteration) {
+                //
+                // reset center + zoom
+                let center = match it {
                     JuliaIterationType::Quadratic => {
-                        do_combo_interest_points(
-                            "Interesting points to explore (quadratic)",
-                            self.point_quadratic_idx,
-                            &Self::INTERESTING_POINTS_QUADRATIC,
-                        )
-                        .map(|sel_idx| {
-                            self.point_quadratic_idx = sel_idx;
-                            self.params.c_x = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[0];
-                            self.params.c_y = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[1];
-                        });
+                        &Self::INTERESTING_POINTS_QUADRATIC[self.point_quadratic_idx].coords
                     }
-
-                    JuliaIterationType::Sine => {
-                        do_combo_interest_points(
-                            "Interesting points to explore (sine)",
-                            self.point_sine_idx,
-                            &Self::INTERESTING_POINTS_SINE,
-                        )
-                        .map(|sel_idx| {
-                            self.point_sine_idx = sel_idx;
-                            self.params.c_x = Self::INTERESTING_POINTS_SINE[sel_idx].coords[0];
-                            self.params.c_y = Self::INTERESTING_POINTS_SINE[sel_idx].coords[1];
-                        });
-                    }
-
                     JuliaIterationType::Cosine => {
-                        do_combo_interest_points(
-                            "Interesting points to explore (cosine)",
-                            self.point_cosine_idx,
-                            &Self::INTERESTING_POINTS_COSINE,
-                        )
-                        .map(|sel_idx| {
-                            self.point_cosine_idx = sel_idx;
-                            self.params.c_x = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[0];
-                            self.params.c_y = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[1];
-                        });
+                        &Self::INTERESTING_POINTS_COSINE[self.point_cosine_idx].coords
                     }
-
+                    JuliaIterationType::Sine => {
+                        &Self::INTERESTING_POINTS_SINE[self.point_sine_idx].coords
+                    }
                     JuliaIterationType::Cubic => {
-                        do_combo_interest_points(
-                            "Interesting points to explore (cubic)",
-                            self.point_cubic_idx,
-                            &Self::INTERESTING_POINTS_CUBIC,
-                        )
-                        .map(|sel_idx| {
-                            self.point_cubic_idx = sel_idx;
-                            self.params.c_x = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[0];
-                            self.params.c_y = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[1];
-                        });
+                        &Self::INTERESTING_POINTS_CUBIC[self.point_cubic_idx].coords
                     }
+                };
+
+                self.params.c_x = center[0];
+                self.params.c_y = center[1];
+                self.params.core.reset::<JuliaCPU2GPU>();
+            }
+        });
+
+        let do_combo_interest_points =
+            |label: &str, sel_idx: usize, points: &[InterestingPoint]| {
+                let mut pt_idx = sel_idx;
+
+                if ui.combo(label, &mut pt_idx, points, |pt_coords| {
+                    std::borrow::Cow::Borrowed(&pt_coords.desc)
+                }) {
+                    Some(pt_idx)
+                } else {
+                    None
                 }
-            });
+            };
+
+        ui.separator();
+        match JuliaIterationType::from(self.params.iteration) {
+            JuliaIterationType::Quadratic => {
+                do_combo_interest_points(
+                    "Interesting points to explore (quadratic)",
+                    self.point_quadratic_idx,
+                    &Self::INTERESTING_POINTS_QUADRATIC,
+                )
+                .map(|sel_idx| {
+                    self.point_quadratic_idx = sel_idx;
+                    self.params.c_x = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[0];
+                    self.params.c_y = Self::INTERESTING_POINTS_QUADRATIC[sel_idx].coords[1];
+                });
+            }
+
+            JuliaIterationType::Sine => {
+                do_combo_interest_points(
+                    "Interesting points to explore (sine)",
+                    self.point_sine_idx,
+                    &Self::INTERESTING_POINTS_SINE,
+                )
+                .map(|sel_idx| {
+                    self.point_sine_idx = sel_idx;
+                    self.params.c_x = Self::INTERESTING_POINTS_SINE[sel_idx].coords[0];
+                    self.params.c_y = Self::INTERESTING_POINTS_SINE[sel_idx].coords[1];
+                });
+            }
+
+            JuliaIterationType::Cosine => {
+                do_combo_interest_points(
+                    "Interesting points to explore (cosine)",
+                    self.point_cosine_idx,
+                    &Self::INTERESTING_POINTS_COSINE,
+                )
+                .map(|sel_idx| {
+                    self.point_cosine_idx = sel_idx;
+                    self.params.c_x = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[0];
+                    self.params.c_y = Self::INTERESTING_POINTS_COSINE[sel_idx].coords[1];
+                });
+            }
+
+            JuliaIterationType::Cubic => {
+                do_combo_interest_points(
+                    "Interesting points to explore (cubic)",
+                    self.point_cubic_idx,
+                    &Self::INTERESTING_POINTS_CUBIC,
+                )
+                .map(|sel_idx| {
+                    self.point_cubic_idx = sel_idx;
+                    self.params.c_x = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[0];
+                    self.params.c_y = Self::INTERESTING_POINTS_CUBIC[sel_idx].coords[1];
+                });
+            }
+        }
     }
 }
 
@@ -802,22 +797,18 @@ impl Mandelbrot {
             .render(vks, context, params_std140.as_bytes());
     }
 
-    pub fn do_ui(&mut self, ui: &mut imgui::Ui) {
-        ui.window("Mandelbrot fractal parameters")
-            .always_auto_resize(true)
-            .build(|| {
-                enum_iterator::all::<MandelbrotType>().for_each(|it| {
-                    if ui.radio_button_bool(
-                        format!("{:?}", it),
-                        MandelbrotType::from(self.params.ftype) == it,
-                    ) {
-                        self.params.ftype = it as _;
-                        self.params.core.reset::<MandelbrotCPU2GPU>();
-                    }
-                });
+    pub fn do_ui(&mut self, ui: &imgui::Ui) {
+        enum_iterator::all::<MandelbrotType>().for_each(|it| {
+            if ui.radio_button_bool(
+                format!("{:?}", it),
+                MandelbrotType::from(self.params.ftype) == it,
+            ) {
+                self.params.ftype = it as _;
+                self.params.core.reset::<MandelbrotCPU2GPU>();
+            }
+        });
 
-                self.params.core.do_ui::<MandelbrotCPU2GPU>(ui);
-            });
+        self.params.core.do_ui::<MandelbrotCPU2GPU>(ui);
     }
 }
 
@@ -849,13 +840,12 @@ impl FractalGPUState {
             .map(|c| {
                 let a: Srgb<u8> = c.into();
                 a.into_u32::<rgb::channels::Abgr>()
-                //
             })
             .collect::<Vec<_>>();
 
         let pixels =
             unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) };
-        crate::vulkan_renderer::misc::write_ppm("urmom.ppm", 512, 1, pixels);
+        crate::vulkan_renderer::misc::write_ppm("color.palette.ppm", 512, 1, pixels);
 
         use ash::vk::ImageCreateInfo;
         let palette = UniqueImage::from_bytes(
@@ -1055,15 +1045,15 @@ impl FractalGPUState {
                             .viewports(&[*Viewport::builder()
                                 .x(0f32)
                                 .y(0f32)
-                                .width(ds.surface.image_size.width as f32)
-                                .height(ds.surface.image_size.height as f32)
+                                .width(ds.surface.caps.current_extent.width as f32)
+                                .height(ds.surface.caps.current_extent.height as f32)
                                 .min_depth(0f32)
                                 .max_depth(1f32)])
                             .scissors(&[Rect2D {
                                 offset: Offset2D { x: 0, y: 0 },
                                 extent: Extent2D {
-                                    width: ds.surface.image_size.width,
-                                    height: ds.surface.image_size.height,
+                                    width: ds.surface.caps.current_extent.width,
+                                    height: ds.surface.caps.current_extent.height,
                                 },
                             }]),
                     )

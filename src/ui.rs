@@ -342,7 +342,7 @@ impl UiBackend {
         let logical_size = window.inner_size().to_logical(hidpi_factor);
         let logical_size = Self::scale_size_from_winit(&platform, window, logical_size);
         imgui.io_mut().display_size = [logical_size.width as f32, logical_size.height as f32];
-	imgui.io_mut().mouse_pos = [0f32; 2];
+        imgui.io_mut().mouse_pos = [0f32; 2];
 
         let vertex_buffer = UniqueBuffer::new::<UiVertex>(
             vks,
@@ -948,15 +948,15 @@ impl UiBackend {
                     .viewports(&[*Viewport::builder()
                         .x(0f32)
                         .y(0f32)
-                        .width(vks.ds.surface.image_size.width as f32)
-                        .height(vks.ds.surface.image_size.height as f32)
+                        .width(vks.ds.surface.caps.current_extent.width as f32)
+                        .height(vks.ds.surface.caps.current_extent.height as f32)
                         .min_depth(0f32)
                         .max_depth(1f32)])
                     .scissors(&[Rect2D {
                         offset: Offset2D { x: 0, y: 0 },
                         extent: Extent2D {
-                            width: vks.ds.surface.image_size.width,
-                            height: vks.ds.surface.image_size.height,
+                            width: vks.ds.surface.caps.current_extent.width,
+                            height: vks.ds.surface.caps.current_extent.height,
                         },
                     }]),
             )

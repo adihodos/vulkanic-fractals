@@ -30,6 +30,9 @@ fn main() {
             .build(),
     )
     .adaptive_format_for_stderr(flexi_logger::AdaptiveFormat::Detailed)
+    .log_to_file(flexi_logger::FileSpec::default())
+    .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+    .duplicate_to_stderr(flexi_logger::Duplicate::All)
     .start()
     .unwrap_or_else(|e| {
         panic!("Failed to start the logger {}", e);
@@ -131,8 +134,10 @@ impl FractalSimulation {
         log::info!("Cursor initial position {:?}", cursor_pos);
 
         let mut vks = Box::pin(
-            VulkanState::new(get_window_data(window)).expect("Failed to initialize vulkan ..."),
+            VulkanState::new(get_window_data(window), window.inner_size().into())
+                .expect("Failed to initialize vulkan ..."),
         );
+
         log::info!("### Device limits:\n{:?}", vks.limits());
         log::info!("### Device features:\n{:?}", vks.features());
 
@@ -168,14 +173,19 @@ impl FractalSimulation {
         }
     }
 
-    fn begin_rendering(&mut self) -> FrameRenderContext {
-        let img_size = self.vks.ds.surface.image_size;
+    fn begin_rendering(&mut self, window: &winit::window::Window) -> FrameRenderContext {
+        let img_size = ash::vk::Extent2D {
+            width: window.inner_size().width,
+            height: window.inner_size().height,
+        };
         let frame_context = self.vks.begin_rendering(img_size);
 
         let render_area = Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: frame_context.fb_size,
         };
+
+        //log::info!("img_size {:?}, render area {:?}", img_size, render_area);
 
         let ubo_data = UniformGlobals {
             // mat: [1f32; 16],
@@ -227,13 +237,15 @@ impl FractalSimulation {
                 .cmd_end_render_pass(frame_context.cmd_buff);
         }
 
-        self.vks.end_rendering();
+        self.vks.end_rendering(frame_context.fb_size);
     }
 
     fn setup_ui(&mut self, window: &winit::window::Window) {
         let ui = self.ui.new_frame(window);
+
         ui.window("Fractal type")
-            .size([400f32, 100f32], imgui::Condition::Always)
+            .size([800f32, 600f32], imgui::Condition::Always)
+            .resizable(true)
             .build(|| {
                 ui.begin_combo("Fractal type", format!("{:?}", self.ftype))
                     .map(|_| {
@@ -255,13 +267,17 @@ impl FractalSimulation {
                                 self.ftype = item;
                             }
                         }
-                    })
-            });
+                    });
 
-        match self.ftype {
-            FractalType::Julia => self.julia.do_ui(ui),
-            FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
-        }
+                ui.separator();
+                ui.text_colored([0.0f32, 1.0f32, 0.0f32, 1.0f32], "::: Parameters :::");
+                ui.separator();
+
+                match self.ftype {
+                    FractalType::Julia => self.julia.do_ui(ui),
+                    FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
+                }
+            });
     }
 
     fn handle_window_event(
@@ -360,7 +376,7 @@ impl FractalSimulation {
             }
 
             Event::MainEventsCleared => {
-                let frame_context = self.begin_rendering();
+                let frame_context = self.begin_rendering(window);
 
                 match self.ftype {
                     FractalType::Julia => {
