@@ -16,8 +16,8 @@ use enum_iterator::{next_cycle, previous_cycle};
 use crate::{
     vulkan_renderer::{
         compile_shader_from_file, BindlessResourceHandle, BindlessResourceSystem,
-        FrameRenderContext, UniqueBuffer, UniqueBufferMapping, UniqueImage, UniqueImageView,
-        UniqueSampler, VulkanDeviceState, VulkanState,
+        FrameRenderContext, RenderState, UniqueBuffer, UniqueBufferMapping, UniqueImage,
+        UniqueImageView, UniqueSampler, VulkanDeviceState, VulkanState,
     },
     InputState,
 };
@@ -907,7 +907,12 @@ impl FractalGPUState {
         vks: &mut VulkanState,
         bindless: &mut BindlessResourceSystem,
     ) -> Self {
-        let pipeline = Self::create_graphics_pipeline::<T>(&vks.ds, vks.renderpass, bindless);
+        let pipeline = match vks.renderstate {
+            RenderState::Renderpass(pass) => {
+                Self::create_graphics_pipeline::<T>(&vks.ds, pass, bindless)
+            }
+            RenderState::Dynamic => unimplemented!("Fix this"),
+        };
 
         let ubo_size = T::ssbo_size();
         let ubo_params = UniqueBuffer::with_capacity(

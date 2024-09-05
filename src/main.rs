@@ -178,6 +178,7 @@ impl FractalSimulation {
             width: window.inner_size().width,
             height: window.inner_size().height,
         };
+
         let frame_context = self.vks.begin_rendering(img_size);
 
         let render_area = Rect2D {
@@ -202,20 +203,6 @@ impl FractalSimulation {
         .write_data(std::slice::from_ref(&ubo_data));
 
         unsafe {
-            self.vks.ds.device.cmd_begin_render_pass(
-                frame_context.cmd_buff,
-                &RenderPassBeginInfo::builder()
-                    .framebuffer(frame_context.framebuffer)
-                    .render_area(render_area)
-                    .render_pass(self.vks.renderpass)
-                    .clear_values(&[ClearValue {
-                        color: ClearColorValue {
-                            float32: [0f32, 0f32, 0f32, 1f32],
-                        },
-                    }]),
-                SubpassContents::INLINE,
-            );
-
             self.vks.ds.device.cmd_bind_descriptor_sets(
                 frame_context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
@@ -227,17 +214,6 @@ impl FractalSimulation {
         }
 
         frame_context
-    }
-
-    fn end_rendering(&mut self, frame_context: &FrameRenderContext) {
-        unsafe {
-            self.vks
-                .ds
-                .device
-                .cmd_end_render_pass(frame_context.cmd_buff);
-        }
-
-        self.vks.end_rendering(frame_context.fb_size);
     }
 
     fn setup_ui(&mut self, window: &winit::window::Window) {
@@ -390,7 +366,7 @@ impl FractalSimulation {
                 self.setup_ui(window);
                 self.ui.draw_frame(&self.vks, &frame_context);
 
-                self.end_rendering(&frame_context);
+                self.vks.end_rendering(frame_context);
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
 

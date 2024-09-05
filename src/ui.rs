@@ -26,7 +26,7 @@ use winit::{
     window::{CursorIcon as MouseCursor, Window},
 };
 
-use crate::vulkan_renderer::{BindlessResourceHandle, BindlessResourceSystem};
+use crate::vulkan_renderer::{BindlessResourceHandle, BindlessResourceSystem, RenderState};
 use crate::{
     vulkan_renderer::{compile_shader_from_file, UniqueImage, UniqueImageView, UniqueSampler},
     FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanState,
@@ -988,7 +988,10 @@ impl UiBackend {
                 &PipelineDynamicStateCreateInfo::builder()
                     .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
             )
-            .render_pass(vks.renderpass)
+            .render_pass(match vks.renderstate {
+                RenderState::Renderpass(p) => p,
+                RenderState::Dynamic => unimplemented!("Fix this"),
+            })
             .layout(bindless_sys.bindless_pipeline_layout())
             .subpass(0);
 
