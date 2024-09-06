@@ -7,12 +7,14 @@ use ash::vk::{
     ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo,
     ImageViewType, MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineCache,
     PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-    PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
+    PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateInfo,
+    PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineMultisampleStateCreateInfo,
+    PipelineRasterizationStateCreateInfo, PipelineRenderingCreateInfo,
     PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-    PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, SampleCountFlags,
-    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
-    VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, Viewport,
+    PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, RenderPass,
+    SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
+    SharingMode, VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate,
+    Viewport,
 };
 use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, Io, Key};
 use imgui::{DrawCmd, FontSource};
@@ -904,96 +906,198 @@ impl UiBackend {
         let fsm =
             compile_shader_from_file("data/shaders/ui.bindless.frag", &vks.ds.device).unwrap();
 
-        let pipeline_create_info = *GraphicsPipelineCreateInfo::builder()
-            .input_assembly_state(
-                &PipelineInputAssemblyStateCreateInfo::builder()
-                    .topology(PrimitiveTopology::TRIANGLE_LIST),
-            )
-            .stages(&[
-                *PipelineShaderStageCreateInfo::builder()
-                    .module(*vsm)
-                    .stage(ShaderStageFlags::VERTEX)
-                    .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
-                *PipelineShaderStageCreateInfo::builder()
-                    .module(*fsm)
-                    .stage(ShaderStageFlags::FRAGMENT)
-                    .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
-            ])
-            .vertex_input_state(
-                &PipelineVertexInputStateCreateInfo::builder()
-                    .vertex_attribute_descriptions(&[
-                        *VertexInputAttributeDescription::builder()
+        let depth_stencil_state = *PipelineDepthStencilStateCreateInfo::builder()
+            .depth_test_enable(false)
+            .depth_write_enable(false)
+            .stencil_test_enable(false)
+            .min_depth_bounds(0f32)
+            .max_depth_bounds(1f32);
+
+        let pipeline_create_info = match vks.renderstate {
+            RenderState::Renderpass(pass) => *GraphicsPipelineCreateInfo::builder()
+                .input_assembly_state(
+                    &PipelineInputAssemblyStateCreateInfo::builder()
+                        .topology(PrimitiveTopology::TRIANGLE_LIST),
+                )
+                .stages(&[
+                    *PipelineShaderStageCreateInfo::builder()
+                        .module(*vsm)
+                        .stage(ShaderStageFlags::VERTEX)
+                        .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
+                    *PipelineShaderStageCreateInfo::builder()
+                        .module(*fsm)
+                        .stage(ShaderStageFlags::FRAGMENT)
+                        .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
+                ])
+                .vertex_input_state(
+                    &PipelineVertexInputStateCreateInfo::builder()
+                        .vertex_attribute_descriptions(&[
+                            *VertexInputAttributeDescription::builder()
+                                .binding(0)
+                                .format(ash::vk::Format::R32G32_SFLOAT)
+                                .location(0)
+                                .offset(0),
+                            *VertexInputAttributeDescription::builder()
+                                .binding(0)
+                                .format(ash::vk::Format::R32G32_SFLOAT)
+                                .location(1)
+                                .offset(8),
+                            *VertexInputAttributeDescription::builder()
+                                .binding(0)
+                                .format(ash::vk::Format::R8G8B8A8_UNORM)
+                                .location(2)
+                                .offset(16),
+                        ])
+                        .vertex_binding_descriptions(&[*VertexInputBindingDescription::builder()
                             .binding(0)
-                            .format(ash::vk::Format::R32G32_SFLOAT)
-                            .location(0)
-                            .offset(0),
-                        *VertexInputAttributeDescription::builder()
-                            .binding(0)
-                            .format(ash::vk::Format::R32G32_SFLOAT)
-                            .location(1)
-                            .offset(8),
-                        *VertexInputAttributeDescription::builder()
-                            .binding(0)
-                            .format(ash::vk::Format::R8G8B8A8_UNORM)
-                            .location(2)
-                            .offset(16),
+                            .input_rate(VertexInputRate::VERTEX)
+                            .stride(size_of::<UiVertex>() as u32)]),
+                )
+                .viewport_state(
+                    &PipelineViewportStateCreateInfo::builder()
+                        .viewports(&[*Viewport::builder()
+                            .x(0f32)
+                            .y(0f32)
+                            .width(vks.ds.surface.caps.current_extent.width as f32)
+                            .height(vks.ds.surface.caps.current_extent.height as f32)
+                            .min_depth(0f32)
+                            .max_depth(1f32)])
+                        .scissors(&[Rect2D {
+                            offset: Offset2D { x: 0, y: 0 },
+                            extent: Extent2D {
+                                width: vks.ds.surface.caps.current_extent.width,
+                                height: vks.ds.surface.caps.current_extent.height,
+                            },
+                        }]),
+                )
+                .rasterization_state(
+                    &PipelineRasterizationStateCreateInfo::builder()
+                        .cull_mode(CullModeFlags::NONE)
+                        .front_face(FrontFace::COUNTER_CLOCKWISE)
+                        .polygon_mode(PolygonMode::FILL)
+                        .line_width(1f32),
+                )
+                .multisample_state(
+                    &PipelineMultisampleStateCreateInfo::builder()
+                        .rasterization_samples(SampleCountFlags::TYPE_1),
+                )
+                .color_blend_state(
+                    &PipelineColorBlendStateCreateInfo::builder().attachments(&[
+                        *PipelineColorBlendAttachmentState::builder()
+                            .color_write_mask(ColorComponentFlags::RGBA)
+                            .blend_enable(true)
+                            .alpha_blend_op(BlendOp::ADD)
+                            .color_blend_op(BlendOp::ADD)
+                            .src_color_blend_factor(BlendFactor::SRC_ALPHA)
+                            .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
+                            .src_alpha_blend_factor(BlendFactor::ONE)
+                            .dst_alpha_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA),
+                    ]),
+                )
+                .depth_stencil_state(&depth_stencil_state)
+                .dynamic_state(
+                    &PipelineDynamicStateCreateInfo::builder()
+                        .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
+                )
+                .render_pass(pass)
+                .layout(bindless_sys.bindless_pipeline_layout())
+                .subpass(0),
+            //
+            // dynamic
+            RenderState::Dynamic { .. } => {
+                let mut render_info = vks.pipeline_render_create_info().unwrap();
+
+                *GraphicsPipelineCreateInfo::builder()
+                    .push_next(&mut render_info)
+                    .input_assembly_state(
+                        &PipelineInputAssemblyStateCreateInfo::builder()
+                            .topology(PrimitiveTopology::TRIANGLE_LIST),
+                    )
+                    .stages(&[
+                        *PipelineShaderStageCreateInfo::builder()
+                            .module(*vsm)
+                            .stage(ShaderStageFlags::VERTEX)
+                            .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
+                        *PipelineShaderStageCreateInfo::builder()
+                            .module(*fsm)
+                            .stage(ShaderStageFlags::FRAGMENT)
+                            .name(&CStr::from_bytes_with_nul(b"main\0").unwrap()),
                     ])
-                    .vertex_binding_descriptions(&[*VertexInputBindingDescription::builder()
-                        .binding(0)
-                        .input_rate(VertexInputRate::VERTEX)
-                        .stride(size_of::<UiVertex>() as u32)]),
-            )
-            .viewport_state(
-                &PipelineViewportStateCreateInfo::builder()
-                    .viewports(&[*Viewport::builder()
-                        .x(0f32)
-                        .y(0f32)
-                        .width(vks.ds.surface.caps.current_extent.width as f32)
-                        .height(vks.ds.surface.caps.current_extent.height as f32)
-                        .min_depth(0f32)
-                        .max_depth(1f32)])
-                    .scissors(&[Rect2D {
-                        offset: Offset2D { x: 0, y: 0 },
-                        extent: Extent2D {
-                            width: vks.ds.surface.caps.current_extent.width,
-                            height: vks.ds.surface.caps.current_extent.height,
-                        },
-                    }]),
-            )
-            .rasterization_state(
-                &PipelineRasterizationStateCreateInfo::builder()
-                    .cull_mode(CullModeFlags::NONE)
-                    .front_face(FrontFace::COUNTER_CLOCKWISE)
-                    .polygon_mode(PolygonMode::FILL)
-                    .line_width(1f32),
-            )
-            .multisample_state(
-                &PipelineMultisampleStateCreateInfo::builder()
-                    .rasterization_samples(SampleCountFlags::TYPE_1),
-            )
-            .color_blend_state(
-                &PipelineColorBlendStateCreateInfo::builder().attachments(&[
-                    *PipelineColorBlendAttachmentState::builder()
-                        .color_write_mask(ColorComponentFlags::RGBA)
-                        .blend_enable(true)
-                        .alpha_blend_op(BlendOp::ADD)
-                        .color_blend_op(BlendOp::ADD)
-                        .src_color_blend_factor(BlendFactor::SRC_ALPHA)
-                        .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
-                        .src_alpha_blend_factor(BlendFactor::ONE)
-                        .dst_alpha_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA),
-                ]),
-            )
-            .dynamic_state(
-                &PipelineDynamicStateCreateInfo::builder()
-                    .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
-            )
-            .render_pass(match vks.renderstate {
-                RenderState::Renderpass(p) => p,
-                RenderState::Dynamic => unimplemented!("Fix this"),
-            })
-            .layout(bindless_sys.bindless_pipeline_layout())
-            .subpass(0);
+                    .vertex_input_state(
+                        &PipelineVertexInputStateCreateInfo::builder()
+                            .vertex_attribute_descriptions(&[
+                                *VertexInputAttributeDescription::builder()
+                                    .binding(0)
+                                    .format(ash::vk::Format::R32G32_SFLOAT)
+                                    .location(0)
+                                    .offset(0),
+                                *VertexInputAttributeDescription::builder()
+                                    .binding(0)
+                                    .format(ash::vk::Format::R32G32_SFLOAT)
+                                    .location(1)
+                                    .offset(8),
+                                *VertexInputAttributeDescription::builder()
+                                    .binding(0)
+                                    .format(ash::vk::Format::R8G8B8A8_UNORM)
+                                    .location(2)
+                                    .offset(16),
+                            ])
+                            .vertex_binding_descriptions(&[
+                                *VertexInputBindingDescription::builder()
+                                    .binding(0)
+                                    .input_rate(VertexInputRate::VERTEX)
+                                    .stride(size_of::<UiVertex>() as u32),
+                            ]),
+                    )
+                    .viewport_state(
+                        &PipelineViewportStateCreateInfo::builder()
+                            .viewports(&[*Viewport::builder()
+                                .x(0f32)
+                                .y(0f32)
+                                .width(vks.ds.surface.caps.current_extent.width as f32)
+                                .height(vks.ds.surface.caps.current_extent.height as f32)
+                                .min_depth(0f32)
+                                .max_depth(1f32)])
+                            .scissors(&[Rect2D {
+                                offset: Offset2D { x: 0, y: 0 },
+                                extent: Extent2D {
+                                    width: vks.ds.surface.caps.current_extent.width,
+                                    height: vks.ds.surface.caps.current_extent.height,
+                                },
+                            }]),
+                    )
+                    .rasterization_state(
+                        &PipelineRasterizationStateCreateInfo::builder()
+                            .cull_mode(CullModeFlags::NONE)
+                            .front_face(FrontFace::COUNTER_CLOCKWISE)
+                            .polygon_mode(PolygonMode::FILL)
+                            .line_width(1f32),
+                    )
+                    .multisample_state(
+                        &PipelineMultisampleStateCreateInfo::builder()
+                            .rasterization_samples(SampleCountFlags::TYPE_1),
+                    )
+                    .color_blend_state(
+                        &PipelineColorBlendStateCreateInfo::builder().attachments(&[
+                            *PipelineColorBlendAttachmentState::builder()
+                                .color_write_mask(ColorComponentFlags::RGBA)
+                                .blend_enable(true)
+                                .alpha_blend_op(BlendOp::ADD)
+                                .color_blend_op(BlendOp::ADD)
+                                .src_color_blend_factor(BlendFactor::SRC_ALPHA)
+                                .dst_color_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA)
+                                .src_alpha_blend_factor(BlendFactor::ONE)
+                                .dst_alpha_blend_factor(BlendFactor::ONE_MINUS_SRC_ALPHA),
+                        ]),
+                    )
+                    .depth_stencil_state(&depth_stencil_state)
+                    .dynamic_state(
+                        &PipelineDynamicStateCreateInfo::builder()
+                            .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
+                    )
+                    .layout(bindless_sys.bindless_pipeline_layout())
+            }
+        };
 
         let pipeline = unsafe {
             vks.ds.device.create_graphics_pipelines(

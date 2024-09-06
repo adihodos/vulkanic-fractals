@@ -7,22 +7,22 @@ use std::{
 use ash::{
     extensions::ext::DebugUtils,
     vk::{
-        AccessFlags, ApplicationInfo, AttachmentDescription, AttachmentLoadOp, AttachmentReference,
-        AttachmentStoreOp, Buffer, BufferCreateInfo, BufferImageCopy, BufferUsageFlags,
-        ClearColorValue, ClearDepthStencilValue, ClearValue, CommandBuffer,
+        AccessFlags, AccessFlags2, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
+        AttachmentReference, AttachmentStoreOp, Buffer, BufferCreateInfo, BufferImageCopy,
+        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, CommandBuffer,
         CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferResetFlags,
         CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
         ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags,
+        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags, DependencyInfo,
         DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo,
         DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
         DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
         DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo,
         Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo, Image,
         ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-        ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags, ImageView,
-        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
+        ImageMemoryBarrier2, ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags,
+        ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
         MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset2D,
         PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceFeatures2,
         PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceProperties2,
@@ -30,8 +30,9 @@ use ash::{
         PhysicalDeviceVulkan12Features, PhysicalDeviceVulkan12Properties,
         PhysicalDeviceVulkan13Features, PhysicalDeviceVulkan13Properties, Pipeline,
         PipelineBindPoint, PipelineCache, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineStageFlags, PresentInfoKHR, PresentModeKHR, PushConstantRange, Queue, Rect2D,
-        RenderPass, RenderPassBeginInfo, RenderPassCreateInfo, SampleCountFlags, Sampler,
+        PipelineRenderingCreateInfo, PipelineStageFlags, PipelineStageFlags2, PresentInfoKHR,
+        PresentModeKHR, PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
+        RenderPassCreateInfo, RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler,
         SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
         ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents, SubpassDescription,
         SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR,
@@ -609,7 +610,11 @@ pub struct WindowSystemIntegration {
 #[derive(Copy, Clone, Debug)]
 pub enum RenderState {
     Renderpass(ash::vk::RenderPass),
-    Dynamic,
+    Dynamic {
+        color_attachments: [Format; 1],
+        depth_attachments: [Format; 1],
+        stencil_attachments: [Format; 1],
+    },
 }
 
 pub struct VulkanState {
@@ -763,6 +768,22 @@ impl VulkanState {
 
         self.resource_loader.work_buffers.push(work_buffer);
     }
+
+    pub fn pipeline_render_create_info(&self) -> Option<PipelineRenderingCreateInfo> {
+        match self.renderstate {
+            RenderState::Dynamic {
+                ref color_attachments,
+                depth_attachments,
+                stencil_attachments,
+            } => Some(
+                *PipelineRenderingCreateInfo::builder()
+                    .color_attachment_formats(color_attachments)
+                    .depth_attachment_format(depth_attachments[0])
+                    .stencil_attachment_format(stencil_attachments[0]),
+            ),
+            RenderState::Renderpass(_) => None,
+        }
+    }
 }
 
 impl std::ops::Drop for VulkanState {
@@ -901,7 +922,7 @@ impl VulkanSwapchainState {
             .collect::<Vec<_>>();
 
         let framebuffers = match renderstate {
-            RenderState::Dynamic => vec![],
+            RenderState::Dynamic { .. } => vec![],
             RenderState::Renderpass(pass) => image_views
                 .iter()
                 .map(|&img_view| {
@@ -1720,8 +1741,12 @@ impl VulkanState {
     }
 
     fn create_render_state(ds: &VulkanDeviceState) -> VkResult<RenderState> {
-        if ds.physical.features.vk13.dynamic_rendering != 1 {
-            Ok(RenderState::Dynamic)
+        if ds.physical.features.vk13.dynamic_rendering != 0 {
+            Ok(RenderState::Dynamic {
+                color_attachments: [ds.surface.fmt.format],
+                depth_attachments: [ds.surface.depth_fmt],
+                stencil_attachments: [ds.surface.depth_fmt],
+            })
         } else {
             let attachment_descriptions = [AttachmentDescription::builder()
                 .format(ds.surface.fmt.format)
@@ -1770,7 +1795,6 @@ impl VulkanState {
 
         //
         // acquire next image
-
         let swapchain_available_img_index = 'acquire_next_image: loop {
             match unsafe {
                 self.swapchain.ext.acquire_next_image(
@@ -1831,8 +1855,118 @@ impl VulkanState {
                 .expect("Failed to begin command buffer ...");
         }
 
+        let color_clear = ClearValue {
+            color: ClearColorValue {
+                float32: [0f32, 0f32, 0f32, 1f32],
+            },
+        };
+
+        let depth_stencil_clear = ClearValue {
+            depth_stencil: ClearDepthStencilValue {
+                depth: 1.0f32,
+                stencil: 0,
+            },
+        };
+
         match self.renderstate {
-            RenderState::Dynamic => {}
+            RenderState::Dynamic { .. } => unsafe {
+                //
+                // transition attachments from undefined layout to optimal layout
+
+                self.ds.device.cmd_pipeline_barrier2(
+                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    &DependencyInfo::builder()
+                        .dependency_flags(DependencyFlags::BY_REGION)
+                        .image_memory_barriers(&[
+                            *ImageMemoryBarrier2::builder()
+                                .src_stage_mask(PipelineStageFlags2::TOP_OF_PIPE)
+                                .src_access_mask(AccessFlags2::NONE)
+                                .dst_stage_mask(PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                                .dst_access_mask(AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                                .old_layout(ImageLayout::UNDEFINED)
+                                .new_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                                .src_queue_family_index(self.ds.physical.queue_family_id)
+                                .dst_queue_family_index(self.ds.physical.queue_family_id)
+                                .image(
+                                    self.swapchain.images[swapchain_available_img_index as usize],
+                                )
+                                .subresource_range(
+                                    *ImageSubresourceRange::builder()
+                                        .aspect_mask(ImageAspectFlags::COLOR)
+                                        .base_mip_level(0)
+                                        .level_count(1)
+                                        .base_array_layer(0)
+                                        .layer_count(1),
+                                ),
+                            *ImageMemoryBarrier2::builder()
+                                .src_stage_mask(PipelineStageFlags2::TOP_OF_PIPE)
+                                .src_access_mask(AccessFlags2::NONE)
+                                .dst_stage_mask(PipelineStageFlags2::EARLY_FRAGMENT_TESTS)
+                                .dst_access_mask(AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE)
+                                .old_layout(ImageLayout::UNDEFINED)
+                                .new_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .src_queue_family_index(self.ds.physical.queue_family_id)
+                                .dst_queue_family_index(self.ds.physical.queue_family_id)
+                                .image(
+                                    self.swapchain.depth_stencil
+                                        [self.swapchain.image_index as usize]
+                                        .0,
+                                )
+                                .subresource_range(
+                                    *ImageSubresourceRange::builder()
+                                        .aspect_mask(
+                                            ImageAspectFlags::DEPTH | ImageAspectFlags::STENCIL,
+                                        )
+                                        .base_mip_level(0)
+                                        .level_count(1)
+                                        .base_array_layer(0)
+                                        .layer_count(1),
+                                ),
+                        ]),
+                );
+
+                //
+                // begin rendering
+                self.ds.device.cmd_begin_rendering(
+                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    &RenderingInfo::builder()
+                        .render_area(Rect2D {
+                            offset: Offset2D::default(),
+                            extent: fb_size,
+                        })
+                        .layer_count(1)
+                        .color_attachments(&[*RenderingAttachmentInfo::builder()
+                            .image_view(
+                                self.swapchain.image_views[swapchain_available_img_index as usize],
+                            )
+                            .image_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .load_op(AttachmentLoadOp::CLEAR)
+                            .store_op(AttachmentStoreOp::STORE)
+                            .clear_value(color_clear)])
+                        .depth_attachment(
+                            &RenderingAttachmentInfo::builder()
+                                .image_view(
+                                    self.swapchain.depth_stencil_views
+                                        [self.swapchain.image_index as usize],
+                                )
+                                .image_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .load_op(AttachmentLoadOp::CLEAR)
+                                .store_op(AttachmentStoreOp::STORE)
+                                .clear_value(depth_stencil_clear),
+                        )
+                        .stencil_attachment(
+                            &RenderingAttachmentInfo::builder()
+                                .image_view(
+                                    self.swapchain.depth_stencil_views
+                                        [self.swapchain.image_index as usize],
+                                )
+                                .image_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+                                .load_op(AttachmentLoadOp::CLEAR)
+                                .store_op(AttachmentStoreOp::STORE)
+                                .clear_value(depth_stencil_clear),
+                        ),
+                );
+            },
             RenderState::Renderpass(pass) => unsafe {
                 self.ds.device.cmd_begin_render_pass(
                     self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
@@ -1845,19 +1979,7 @@ impl VulkanState {
                             offset: Offset2D::default(),
                             extent: fb_size,
                         })
-                        .clear_values(&[
-                            ClearValue {
-                                color: ClearColorValue {
-                                    float32: [0f32, 0f32, 0f32, 1f32],
-                                },
-                            },
-                            ClearValue {
-                                depth_stencil: ClearDepthStencilValue {
-                                    depth: 1.0f32,
-                                    stencil: 0,
-                                },
-                            },
-                        ]),
+                        .clear_values(&[color_clear, depth_stencil_clear]),
                     SubpassContents::INLINE,
                 );
             },
@@ -1867,20 +1989,45 @@ impl VulkanState {
             cmd_buff: self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
             fb_size,
             current_frame_id: self.swapchain.image_index,
+            swapchain_image_index: swapchain_available_img_index,
         }
     }
 
     pub fn end_rendering(&mut self, frame_ctx: FrameRenderContext) {
         //
         // end command buffer + renderpass
-
         match self.renderstate {
             RenderState::Renderpass(_) => unsafe {
                 self.ds.device.cmd_end_render_pass(frame_ctx.cmd_buff);
             },
-            RenderState::Dynamic => {
-                unimplemented!("Dynamic rendering is still WIP");
-            }
+            RenderState::Dynamic { .. } => unsafe {
+                self.ds.device.cmd_end_rendering(frame_ctx.cmd_buff);
+                //
+                // transition image from attachment optimal to SRC_PRESENT
+                self.ds.device.cmd_pipeline_barrier2(
+                    frame_ctx.cmd_buff,
+                    &DependencyInfo::builder()
+                        .dependency_flags(DependencyFlags::BY_REGION)
+                        .image_memory_barriers(&[*ImageMemoryBarrier2::builder()
+                            .src_stage_mask(PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                            .src_access_mask(AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                            .dst_stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)
+                            .dst_access_mask(AccessFlags2::MEMORY_READ)
+                            .old_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                            .new_layout(ImageLayout::PRESENT_SRC_KHR)
+                            .src_queue_family_index(self.ds.physical.queue_family_id)
+                            .dst_queue_family_index(self.ds.physical.queue_family_id)
+                            .image(self.swapchain.images[frame_ctx.swapchain_image_index as usize])
+                            .subresource_range(
+                                *ImageSubresourceRange::builder()
+                                    .aspect_mask(ImageAspectFlags::COLOR)
+                                    .base_mip_level(0)
+                                    .level_count(1)
+                                    .base_array_layer(0)
+                                    .layer_count(1),
+                            )]),
+                );
+            },
         }
 
         unsafe {
@@ -2005,6 +2152,7 @@ pub struct FrameRenderContext {
     pub cmd_buff: CommandBuffer,
     pub fb_size: Extent2D,
     pub current_frame_id: u32,
+    pub swapchain_image_index: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
