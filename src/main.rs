@@ -18,6 +18,7 @@ use winit::{
 };
 
 mod fractal;
+mod shader;
 mod ui;
 mod vulkan_renderer;
 
@@ -37,6 +38,18 @@ fn main() {
     .unwrap_or_else(|e| {
         panic!("Failed to start the logger {}", e);
     });
+
+    use crate::shader::*;
+    let _ = compile_shader(&ShaderCompileInfo {
+        src: ShaderSource::File("data/shaders/apps/triangle/tri.vert".into()),
+        entry_point: None,
+        optimize: false,
+        debug_info: false,
+        compile_defs: &[("FRAME_BASED_SHADER", None)],
+    })
+    .expect("Sum tin wong");
+    // let spv_code = include_bytes!("test.spv");
+    // crate::shader::reflect_shader_module(&spv_code);
 
     let event_loop = EventLoop::new();
     let primary_monitor = event_loop

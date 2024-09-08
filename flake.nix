@@ -48,6 +48,7 @@
           cargo-edit
           cargo-watch
           rust-analyzer
+          gdb
           cmake
           cmakeCurses
 
@@ -91,6 +92,7 @@
         env = {
           # Required by rust-analyzer
           RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+          RUST_BACKTRACE = 1;
         };
       };
     });

@@ -11,10 +11,12 @@ flexi_logger = "*"
 winit = "*"
 enum-iterator = "*"
 ash = { version = "*", features = [ "linked" ] }
-shaderc = "*"
+shaderc = { version = "0.8.3", features = [ "prefer-static-linking" ] }
 imgui = "0.11.0"
-thiserror = "1.0.50"
+thiserror = "1.0.63"
 palette = "0.7.3"
 enterpolation = "0.2.1"
 crevice = "0.14.0"
 num_enum = "0.7.1"
+spirv-reflect = { git = "https://github.com/adihodos/spirv-reflect-rs.git", branch = "master" }
+memmap = "0.7.0"
