@@ -383,10 +383,3 @@ fn spirv_reflect_descriptor_type_to_vk_descriptor_type(
         _ => panic!("Descriptor type {dtype:?} not supported"),
     }
 }
-
-// fn spirv_reflect_shader_stage_to_vk_shader_stage(
-//     stage: spirv_reflect::types::variable::ReflectShaderStageFlags,
-// ) -> ash::vk::ShaderStageFlags {
-//     use ash::vk::ShaderStageFlags;
-//     use spirv_reflect::types::variable::ReflectShaderStageFlags;
-// }

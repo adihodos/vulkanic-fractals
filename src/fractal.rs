@@ -379,17 +379,6 @@ impl FractalCoreParams for JuliaCPU2GPU {
     }
 }
 
-// impl std::default::Default for JuliaCPU2GPU {
-//     fn default() -> Self {
-//         Self {
-//             c_x: -0.7f32,
-//             c_y: -0.3f32,
-//             iteration: JuliaIterationType::Quadratic as u32,
-//             core: FractalCommonCore::new::<JuliaCPU2GPU>(),
-//         }
-//     }
-// }
-
 impl JuliaCPU2GPU {
     fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType, palette_handle: u32) -> JuliaCPU2GPU {
         use crevice::glsl::GlslStruct;
@@ -742,7 +731,6 @@ impl FractalCoreParams for MandelbrotCPU2GPU {
         sizer.add::<u32>();
 
         log::info!("Mandelbrot SSBO item length {}", sizer.len());
-
         sizer.len()
     }
 }
@@ -931,7 +919,7 @@ impl FractalGPUState {
             .create(
                 vks,
                 GraphicsPipelineCreateOptions {
-                    layout: Some(bindless.bindless_pipeline_layout()),
+                    layout: Some(bindless.pipeline_layout()),
                 },
             )
             .expect("Oyyy blyat, failed to create pipeline");
@@ -945,9 +933,9 @@ impl FractalGPUState {
             T::ssbo_size(),
         );
 
-        let ubo_handle = bindless.register_ssbo(&vks.ds, &ubo_params);
+        let ubo_handle = bindless.register_ssbo(&vks.device_state, &ubo_params);
         let (palettes, palettes_view, sampler) = Self::make_palettes(vks);
-        let palette_handle = bindless.register_image(&vks.ds, &palettes_view, &sampler);
+        let palette_handle = bindless.register_image(&vks.device_state, &palettes_view, &sampler);
 
         Self {
             pipeline,
@@ -971,14 +959,14 @@ impl FractalGPUState {
         // copy params
         UniqueBufferMapping::new(
             &self.ubo_params,
-            &vks.ds,
+            &vks.device_state,
             Some(self.ubo_params.aligned_item_size * context.current_frame_id as usize),
             Some(self.ubo_params.aligned_item_size),
         )
         .write_data(gpu_data);
 
         unsafe {
-            vks.ds.device.cmd_set_viewport_with_count(
+            vks.device_state.device.cmd_set_viewport_with_count(
                 context.cmd_buff,
                 &[Viewport {
                     x: 0f32,
@@ -990,17 +978,17 @@ impl FractalGPUState {
                 }],
             );
 
-            vks.ds
+            vks.device_state
                 .device
                 .cmd_set_scissor_with_count(context.cmd_buff, &[render_area]);
 
-            vks.ds.device.cmd_bind_pipeline(
+            vks.device_state.device.cmd_bind_pipeline(
                 context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
                 self.pipeline.handle(),
             );
 
-            vks.ds.device.cmd_push_constants(
+            vks.device_state.device.cmd_push_constants(
                 context.cmd_buff,
                 self.pipeline.layout(),
                 ShaderStageFlags::ALL,
@@ -1008,7 +996,9 @@ impl FractalGPUState {
                 &self.ubo_handle.get_id().to_le_bytes(),
             );
 
-            vks.ds.device.cmd_draw(context.cmd_buff, 3, 1, 0, 0);
+            vks.device_state
+                .device
+                .cmd_draw(context.cmd_buff, 3, 1, 0, 0);
         }
     }
 }

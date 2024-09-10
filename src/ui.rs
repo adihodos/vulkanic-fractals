@@ -366,7 +366,7 @@ impl UiBackend {
             vks.swapchain.max_frames as usize,
         );
 
-        let ubo_handle = bindless_sys.register_ssbo(&vks.ds, &ubo_vs);
+        let ubo_handle = bindless_sys.register_ssbo(&vks.device_state, &ubo_vs);
 
         let font_files = [
             "data/fonts/iosevka-ss03-regular.ttf",
@@ -450,7 +450,8 @@ impl UiBackend {
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
         );
 
-        let atlas_handle = bindless_sys.register_image(&vks.ds, &font_atlas_img_view, &sampler);
+        let atlas_handle =
+            bindless_sys.register_image(&vks.device_state, &font_atlas_img_view, &sampler);
 
         let pipeline = GraphicsPipelineSetupHelper::new()
             .set_input_assembly_state(InputAssemblyState {
@@ -511,7 +512,7 @@ impl UiBackend {
             .create(
                 vks,
                 GraphicsPipelineCreateOptions {
-                    layout: Some(bindless_sys.bindless_pipeline_layout()),
+                    layout: Some(bindless_sys.pipeline_layout()),
                 },
             )
             .expect("Oyyy blyat, failed to create pipeline");
@@ -532,7 +533,7 @@ impl UiBackend {
                 atlas_handle,
                 sampler,
                 pipeline,
-                bindless_layout: bindless_sys.bindless_pipeline_layout(),
+                bindless_layout: bindless_sys.pipeline_layout(),
             },
 
             platform,
@@ -760,14 +761,14 @@ impl UiBackend {
         {
             let mut vertex_buffer_mapping = UniqueBufferMapping::new(
                 &self.rs.vertex_buffer,
-                &vks.ds,
+                &vks.device_state,
                 Some(buf_size_one_frame * frame_context.current_frame_id as usize),
                 Some(buf_size_one_frame),
             );
 
             let mut index_buffer_mapping = UniqueBufferMapping::new(
                 &self.rs.index_buffer,
-                &vks.ds,
+                &vks.device_state,
                 Some(index_buf_size_one_frame * frame_context.current_frame_id as usize),
                 Some(index_buf_size_one_frame),
             );
@@ -787,7 +788,7 @@ impl UiBackend {
             );
         }
 
-        let graphics_device = &vks.ds.device;
+        let graphics_device = &vks.device_state.device;
 
         unsafe {
             graphics_device.cmd_bind_pipeline(
@@ -863,13 +864,13 @@ impl UiBackend {
 
             UniqueBufferMapping::new(
                 &self.rs.ubo_vs,
-                &vks.ds,
+                &vks.device_state,
                 Some(size_of::<UiBackendParams>() * frame_context.current_frame_id as usize),
                 Some(size_of::<UiBackendParams>()),
             )
             .write_data(std::slice::from_ref(&transform));
 
-            vks.ds.device.cmd_push_constants(
+            vks.device_state.device.cmd_push_constants(
                 frame_context.cmd_buff,
                 self.rs.bindless_layout,
                 ShaderStageFlags::ALL,

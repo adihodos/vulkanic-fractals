@@ -1,9 +1,6 @@
 use std::mem::size_of;
 
-use ash::vk::{
-    BufferUsageFlags, ClearColorValue, ClearValue, MemoryPropertyFlags, Offset2D,
-    PipelineBindPoint, Rect2D, RenderPassBeginInfo, SubpassContents,
-};
+use ash::vk::{BufferUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint, Rect2D};
 
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
@@ -38,9 +35,6 @@ fn main() {
     .unwrap_or_else(|e| {
         panic!("Failed to start the logger {}", e);
     });
-
-    // let spv_code = include_bytes!("test.spv");
-    // crate::shader::reflect_shader_module(&spv_code);
 
     let event_loop = EventLoop::new();
     let primary_monitor = event_loop
@@ -161,7 +155,7 @@ impl FractalSimulation {
             MemoryPropertyFlags::HOST_VISIBLE,
             vks.swapchain.max_frames as usize,
         );
-        bindless_sys.register_uniform_buffer(&vks.ds, &ubo_globals);
+        bindless_sys.register_uniform_buffer(&vks.device_state, &ubo_globals);
 
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
@@ -185,13 +179,6 @@ impl FractalSimulation {
 
         let frame_context = self.vks.begin_rendering(img_size);
 
-        let render_area = Rect2D {
-            offset: Offset2D { x: 0, y: 0 },
-            extent: frame_context.fb_size,
-        };
-
-        //log::info!("img_size {:?}, render area {:?}", img_size, render_area);
-
         let ubo_data = UniformGlobals {
             // mat: [1f32; 16],
             frame_id: frame_context.current_frame_id,
@@ -200,17 +187,17 @@ impl FractalSimulation {
 
         UniqueBufferMapping::new(
             &self.ubo_globals,
-            &self.vks.ds,
+            &self.vks.device_state,
             Some(size_of::<UniformGlobals>() * frame_context.current_frame_id as usize),
             Some(size_of::<UniformGlobals>()),
         )
         .write_data(std::slice::from_ref(&ubo_data));
 
         unsafe {
-            self.vks.ds.device.cmd_bind_descriptor_sets(
+            self.vks.device_state.device.cmd_bind_descriptor_sets(
                 frame_context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
-                self.bindless_sys.bindless_pipeline_layout(),
+                self.bindless_sys.pipeline_layout(),
                 0,
                 self.bindless_sys.descriptor_sets(),
                 &[],
