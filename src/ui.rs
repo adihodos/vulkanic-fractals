@@ -3,17 +3,13 @@ use std::{cmp::Ordering, ffi::CStr, mem::size_of};
 use ash::vk::{
     BlendFactor, BlendOp, BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentMapping,
     ComponentSwizzle, CullModeFlags, DeviceSize, DynamicState, Extent2D, Extent3D, Filter,
-    FrontFace, GraphicsPipelineCreateInfo, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
-    ImageSubresourceRange, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo,
-    ImageViewType, MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineCache,
-    PipelineColorBlendAttachmentState, PipelineColorBlendStateCreateInfo,
-    PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateInfo,
-    PipelineInputAssemblyStateCreateInfo, PipelineLayout, PipelineMultisampleStateCreateInfo,
-    PipelineRasterizationStateCreateInfo, PipelineShaderStageCreateInfo,
-    PipelineVertexInputStateCreateInfo, PipelineViewportStateCreateInfo, PolygonMode,
-    PrimitiveTopology, Rect2D, SampleCountFlags, SamplerAddressMode, SamplerCreateInfo,
-    SamplerMipmapMode, ShaderStageFlags, SharingMode, VertexInputAttributeDescription,
-    VertexInputBindingDescription, VertexInputRate, Viewport,
+    FrontFace, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange,
+    ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo, ImageViewType,
+    MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineColorBlendAttachmentState,
+    PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo, PipelineLayout,
+    PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SampleCountFlags,
+    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
+    VertexInputAttributeDescription, VertexInputRate, Viewport,
 };
 use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, Io, Key};
 use imgui::{DrawCmd, FontSource};
@@ -30,10 +26,10 @@ use winit::{
 use crate::shader::ShaderSource;
 use crate::vulkan_renderer::{
     BindlessResourceHandle, BindlessResourceSystem, GraphicsPipelineCreateOptions,
-    GraphicsPipelineSetupHelper, InputAssemblyState, RenderState, UniquePipeline,
+    GraphicsPipelineSetupHelper, InputAssemblyState, UniquePipeline,
 };
 use crate::{
-    vulkan_renderer::{compile_shader_from_file, UniqueImage, UniqueImageView, UniqueSampler},
+    vulkan_renderer::{UniqueImage, UniqueImageView, UniqueSampler},
     FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanRenderer,
 };
 
@@ -516,8 +512,6 @@ impl UiBackend {
                 vks,
                 GraphicsPipelineCreateOptions {
                     layout: Some(bindless_sys.bindless_pipeline_layout()),
-                    renderpass: None,
-                    subpass: None,
                 },
             )
             .expect("Oyyy blyat, failed to create pipeline");

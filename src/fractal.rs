@@ -1,24 +1,21 @@
 use ash::vk::{
-    BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentSwizzle, CullModeFlags,
-    DynamicState, Extent2D, Extent3D, Filter, Format, FrontFace, GraphicsPipelineCreateInfo,
-    ImageLayout, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo, MemoryPropertyFlags,
-    Offset2D, Pipeline, PipelineBindPoint, PipelineColorBlendAttachmentState,
-    PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
-    PipelineDynamicStateCreateInfo, PipelineInputAssemblyStateCreateInfo, PipelineLayout,
-    PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-    PipelineShaderStageCreateInfo, PipelineVertexInputStateCreateInfo,
-    PipelineViewportStateCreateInfo, PolygonMode, PrimitiveTopology, Rect2D, RenderPass,
-    SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
-    SharingMode, Viewport,
+    BorderColor, BufferUsageFlags, ComponentSwizzle, CullModeFlags, DynamicState, Extent3D, Filter,
+    Format, FrontFace, ImageLayout, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo,
+    MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineDepthStencilStateCreateInfo,
+    PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SampleCountFlags,
+    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
+    Viewport,
 };
 use crevice::std140::AsStd140;
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
+    shader::ShaderSource,
     vulkan_renderer::{
-        compile_shader_from_file, BindlessResourceHandle, BindlessResourceSystem,
-        FrameRenderContext, RenderState, UniqueBuffer, UniqueBufferMapping, UniqueImage,
-        UniqueImageView, UniqueSampler, VulkanDeviceState, VulkanRenderer,
+        BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext,
+        GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, UniqueBuffer,
+        UniqueBufferMapping, UniqueImage, UniqueImageView, UniquePipeline, UniqueSampler,
+        VulkanRenderer,
     },
     InputState,
 };
@@ -814,8 +811,7 @@ impl Mandelbrot {
 }
 
 struct FractalGPUState {
-    pipeline: Pipeline,
-    bindless_layout: PipelineLayout,
+    pipeline: UniquePipeline,
     ubo_params: UniqueBuffer,
     ubo_size: usize,
     ubo_handle: BindlessResourceHandle,
@@ -908,7 +904,37 @@ impl FractalGPUState {
         vks: &mut VulkanRenderer,
         bindless: &mut BindlessResourceSystem,
     ) -> Self {
-        let pipeline = Self::create_graphics_pipeline::<T>(vks, bindless);
+        let pipeline = GraphicsPipelineSetupHelper::new()
+            .add_shader_stage(ShaderSource::File(T::VERTEX_SHADER_MODULE.into()))
+            .add_shader_stage(ShaderSource::File(
+                T::BINDLESS_FRAGMENT_SHADER_MODULE.into(),
+            ))
+            .set_depth_stencil_state(
+                *PipelineDepthStencilStateCreateInfo::builder()
+                    .depth_test_enable(false)
+                    .depth_write_enable(false)
+                    .stencil_test_enable(false)
+                    .min_depth_bounds(0f32)
+                    .max_depth_bounds(1f32),
+            )
+            .set_raster_state(
+                *PipelineRasterizationStateCreateInfo::builder()
+                    .cull_mode(CullModeFlags::NONE)
+                    .front_face(FrontFace::COUNTER_CLOCKWISE)
+                    .polygon_mode(PolygonMode::FILL)
+                    .line_width(1f32),
+            )
+            .set_dynamic_state(&[
+                DynamicState::VIEWPORT_WITH_COUNT,
+                DynamicState::SCISSOR_WITH_COUNT,
+            ])
+            .create(
+                vks,
+                GraphicsPipelineCreateOptions {
+                    layout: Some(bindless.bindless_pipeline_layout()),
+                },
+            )
+            .expect("Oyyy blyat, failed to create pipeline");
 
         let ubo_size = T::ssbo_size();
         let ubo_params = UniqueBuffer::with_capacity(
@@ -925,7 +951,6 @@ impl FractalGPUState {
 
         Self {
             pipeline,
-            bindless_layout: bindless.bindless_pipeline_layout(),
             ubo_params,
             ubo_handle,
             ubo_size,
@@ -953,9 +978,8 @@ impl FractalGPUState {
         .write_data(gpu_data);
 
         unsafe {
-            vks.ds.device.cmd_set_viewport(
+            vks.ds.device.cmd_set_viewport_with_count(
                 context.cmd_buff,
-                0,
                 &[Viewport {
                     x: 0f32,
                     y: context.fb_size.height as f32,
@@ -968,17 +992,17 @@ impl FractalGPUState {
 
             vks.ds
                 .device
-                .cmd_set_scissor(context.cmd_buff, 0, &[render_area]);
+                .cmd_set_scissor_with_count(context.cmd_buff, &[render_area]);
 
             vks.ds.device.cmd_bind_pipeline(
                 context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
-                self.pipeline,
+                self.pipeline.handle(),
             );
 
             vks.ds.device.cmd_push_constants(
                 context.cmd_buff,
-                self.bindless_layout,
+                self.pipeline.layout(),
                 ShaderStageFlags::ALL,
                 0,
                 &self.ubo_handle.get_id().to_le_bytes(),
@@ -986,166 +1010,6 @@ impl FractalGPUState {
 
             vks.ds.device.cmd_draw(context.cmd_buff, 3, 1, 0, 0);
         }
-    }
-
-    fn create_graphics_pipeline<T: FractalCoreParams>(
-        vks: &VulkanRenderer,
-        bindless: &BindlessResourceSystem,
-    ) -> Pipeline {
-        let vsm = compile_shader_from_file(T::VERTEX_SHADER_MODULE, &vks.ds.device).unwrap();
-        let fsm =
-            compile_shader_from_file(T::BINDLESS_FRAGMENT_SHADER_MODULE, &vks.ds.device).unwrap();
-
-        let depth_stencil_state = *PipelineDepthStencilStateCreateInfo::builder()
-            .depth_test_enable(false)
-            .depth_write_enable(false)
-            .stencil_test_enable(false)
-            .min_depth_bounds(0f32)
-            .max_depth_bounds(1f32);
-
-        use std::ffi::CStr;
-        let pipeline = match vks.renderstate {
-            RenderState::Dynamic { .. } => unsafe {
-                let mut render_info = vks.pipeline_render_create_info().unwrap();
-
-                vks.ds.device.create_graphics_pipelines(
-                    ash::vk::PipelineCache::null(),
-                    &[*GraphicsPipelineCreateInfo::builder()
-                        .push_next(&mut render_info)
-                        .stages(&[
-                            *PipelineShaderStageCreateInfo::builder()
-                                .module(*vsm)
-                                .stage(ShaderStageFlags::VERTEX)
-                                .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
-                            *PipelineShaderStageCreateInfo::builder()
-                                .module(*fsm)
-                                .stage(ShaderStageFlags::FRAGMENT)
-                                .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
-                        ])
-                        .vertex_input_state(
-                            &PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(&[])
-                                .vertex_binding_descriptions(&[]),
-                        )
-                        .input_assembly_state(
-                            &PipelineInputAssemblyStateCreateInfo::builder()
-                                .topology(PrimitiveTopology::TRIANGLE_LIST),
-                        )
-                        .rasterization_state(
-                            &PipelineRasterizationStateCreateInfo::builder()
-                                .polygon_mode(PolygonMode::FILL)
-                                .cull_mode(CullModeFlags::BACK)
-                                .front_face(FrontFace::COUNTER_CLOCKWISE)
-                                .line_width(1f32)
-                                .depth_clamp_enable(false),
-                        )
-                        .multisample_state(
-                            &PipelineMultisampleStateCreateInfo::builder()
-                                .rasterization_samples(SampleCountFlags::TYPE_1),
-                        )
-                        .color_blend_state(
-                            &PipelineColorBlendStateCreateInfo::builder()
-                                .attachments(&[*PipelineColorBlendAttachmentState::builder()
-                                    .color_write_mask(ColorComponentFlags::RGBA)]),
-                        )
-                        .depth_stencil_state(&depth_stencil_state)
-                        .dynamic_state(
-                            &PipelineDynamicStateCreateInfo::builder()
-                                .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
-                        )
-                        .viewport_state(
-                            &PipelineViewportStateCreateInfo::builder()
-                                .viewports(&[*Viewport::builder()
-                                    .x(0f32)
-                                    .y(0f32)
-                                    .width(vks.ds.surface.caps.current_extent.width as f32)
-                                    .height(vks.ds.surface.caps.current_extent.height as f32)
-                                    .min_depth(0f32)
-                                    .max_depth(1f32)])
-                                .scissors(&[Rect2D {
-                                    offset: Offset2D { x: 0, y: 0 },
-                                    extent: Extent2D {
-                                        width: vks.ds.surface.caps.current_extent.width,
-                                        height: vks.ds.surface.caps.current_extent.height,
-                                    },
-                                }]),
-                        )
-                        .layout(bindless.bindless_pipeline_layout())],
-                    None,
-                )
-            },
-            RenderState::Renderpass(pass) => unsafe {
-                vks.ds.device.create_graphics_pipelines(
-                    ash::vk::PipelineCache::null(),
-                    &[*GraphicsPipelineCreateInfo::builder()
-                        .stages(&[
-                            *PipelineShaderStageCreateInfo::builder()
-                                .module(*vsm)
-                                .stage(ShaderStageFlags::VERTEX)
-                                .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
-                            *PipelineShaderStageCreateInfo::builder()
-                                .module(*fsm)
-                                .stage(ShaderStageFlags::FRAGMENT)
-                                .name(CStr::from_bytes_with_nul(b"main\0" as &[u8]).unwrap()),
-                        ])
-                        .vertex_input_state(
-                            &PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(&[])
-                                .vertex_binding_descriptions(&[]),
-                        )
-                        .input_assembly_state(
-                            &PipelineInputAssemblyStateCreateInfo::builder()
-                                .topology(PrimitiveTopology::TRIANGLE_LIST),
-                        )
-                        .rasterization_state(
-                            &PipelineRasterizationStateCreateInfo::builder()
-                                .polygon_mode(PolygonMode::FILL)
-                                .cull_mode(CullModeFlags::BACK)
-                                .front_face(FrontFace::COUNTER_CLOCKWISE)
-                                .line_width(1f32)
-                                .depth_clamp_enable(false),
-                        )
-                        .multisample_state(
-                            &PipelineMultisampleStateCreateInfo::builder()
-                                .rasterization_samples(SampleCountFlags::TYPE_1),
-                        )
-                        .color_blend_state(
-                            &PipelineColorBlendStateCreateInfo::builder()
-                                .attachments(&[*PipelineColorBlendAttachmentState::builder()
-                                    .color_write_mask(ColorComponentFlags::RGBA)]),
-                        )
-                        .depth_stencil_state(&depth_stencil_state)
-                        .dynamic_state(
-                            &PipelineDynamicStateCreateInfo::builder()
-                                .dynamic_states(&[DynamicState::VIEWPORT, DynamicState::SCISSOR]),
-                        )
-                        .viewport_state(
-                            &PipelineViewportStateCreateInfo::builder()
-                                .viewports(&[*Viewport::builder()
-                                    .x(0f32)
-                                    .y(0f32)
-                                    .width(vks.ds.surface.caps.current_extent.width as f32)
-                                    .height(vks.ds.surface.caps.current_extent.height as f32)
-                                    .min_depth(0f32)
-                                    .max_depth(1f32)])
-                                .scissors(&[Rect2D {
-                                    offset: Offset2D { x: 0, y: 0 },
-                                    extent: Extent2D {
-                                        width: vks.ds.surface.caps.current_extent.width,
-                                        height: vks.ds.surface.caps.current_extent.height,
-                                    },
-                                }]),
-                        )
-                        .layout(bindless.bindless_pipeline_layout())
-                        .render_pass(pass)
-                        .subpass(0)],
-                    None,
-                )
-            },
-        }
-        .expect("Failed to create graphics pipeline ... ");
-
-        pipeline[0]
     }
 }
 

@@ -241,8 +241,14 @@ void main() {
   const FractalCommonCore params = mandel_params.cc;
 
   const Complex c = screen_coords_to_complex_coords(
-						    gl_FragCoord.x, gl_FragCoord.y, params.fxmin, params.fxmax, params.fymin, params.fymax, params.screen_width, params.screen_height
-						    );
+    gl_FragCoord.x, 
+    gl_FragCoord.y, 
+    params.fxmin, 
+    params.fxmax, 
+    params.fymin, 
+    params.fymax, 
+    params.screen_width, 
+    params.screen_height);
 
   Complex z = Complex(0.0, 0.0);
 
@@ -289,7 +295,7 @@ void main() {
 
   case COLORING_PALETTE:
     color = texture(g_GlobalColorPalette[nonuniformEXT(params.palette_handle)],
-		    vec2(float(res.mu) / float(params.iterations), params.palette_idx)).rgb;
+        vec2(float(res.mu) / float(params.iterations), params.palette_idx)).rgb;
     break;
   }
 

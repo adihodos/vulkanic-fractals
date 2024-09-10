@@ -2445,8 +2445,6 @@ pub struct GraphicsPipelineSetupHelper<'a> {
 
 pub struct GraphicsPipelineCreateOptions {
     pub layout: Option<PipelineLayout>,
-    pub renderpass: Option<RenderPass>,
-    pub subpass: Option<u32>,
 }
 
 impl<'a> GraphicsPipelineSetupHelper<'a> {
@@ -2774,13 +2772,11 @@ impl<'a> GraphicsPipelineSetupHelper<'a> {
                 .color_blend_state(&colorblend_state)
                 .viewport_state(&viewport_state)
                 .dynamic_state(&dynamic_state)
-                .layout(pipeline_data.layout())
-                .render_pass(options.renderpass.unwrap_or_else(|| RenderPass::null()))
-                .subpass(options.subpass.unwrap_or(0));
+                .layout(pipeline_data.layout());
 
             match renderer.renderstate {
                 RenderState::Renderpass(pass) => {
-                    pipeline_create_info = pipeline_create_info.render_pass(pass);
+                    pipeline_create_info = pipeline_create_info.render_pass(pass).subpass(0);
                 }
                 RenderState::Dynamic { .. } => {
                     pipeline_create_info =
