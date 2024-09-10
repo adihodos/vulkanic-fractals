@@ -18,7 +18,7 @@ use crate::{
     vulkan_renderer::{
         compile_shader_from_file, BindlessResourceHandle, BindlessResourceSystem,
         FrameRenderContext, RenderState, UniqueBuffer, UniqueBufferMapping, UniqueImage,
-        UniqueImageView, UniqueSampler, VulkanDeviceState, VulkanState,
+        UniqueImageView, UniqueSampler, VulkanDeviceState, VulkanRenderer,
     },
     InputState,
 };
@@ -549,7 +549,7 @@ impl Julia {
         },
     ];
 
-    pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Julia {
+    pub fn new(vks: &mut VulkanRenderer, bindless: &mut BindlessResourceSystem) -> Julia {
         let gpu_state = FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless);
         Self {
             params: JuliaCPU2GPU::new(
@@ -588,7 +588,7 @@ impl Julia {
         }
     }
 
-    pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
+    pub fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext) {
         let params_std140 = self.params.as_std140();
         self.gpu_state
             .render(vks, context, params_std140.as_bytes());
@@ -756,7 +756,7 @@ pub struct Mandelbrot {
 }
 
 impl Mandelbrot {
-    pub fn new(vks: &mut VulkanState, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
+    pub fn new(vks: &mut VulkanRenderer, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
         let gpu_state = FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless);
         Self {
             params: MandelbrotCPU2GPU {
@@ -792,7 +792,7 @@ impl Mandelbrot {
         }
     }
 
-    pub fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext) {
+    pub fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext) {
         let params_std140 = self.params.as_std140();
         self.gpu_state
             .render(vks, context, params_std140.as_bytes());
@@ -826,7 +826,7 @@ struct FractalGPUState {
 }
 
 impl FractalGPUState {
-    fn make_palettes(vks: &mut VulkanState) -> (UniqueImage, UniqueImageView, UniqueSampler) {
+    fn make_palettes(vks: &mut VulkanRenderer) -> (UniqueImage, UniqueImageView, UniqueSampler) {
         use enterpolation::{linear::ConstEquidistantLinear, Curve};
         use palette::{rgb, LinSrgb, Srgb};
 
@@ -905,7 +905,7 @@ impl FractalGPUState {
     }
 
     fn new<T: FractalCoreParams>(
-        vks: &mut VulkanState,
+        vks: &mut VulkanRenderer,
         bindless: &mut BindlessResourceSystem,
     ) -> Self {
         let pipeline = Self::create_graphics_pipeline::<T>(vks, bindless);
@@ -936,7 +936,7 @@ impl FractalGPUState {
         }
     }
 
-    fn render(&mut self, vks: &VulkanState, context: &FrameRenderContext, gpu_data: &[u8]) {
+    fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext, gpu_data: &[u8]) {
         let render_area = Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: context.fb_size,
@@ -989,7 +989,7 @@ impl FractalGPUState {
     }
 
     fn create_graphics_pipeline<T: FractalCoreParams>(
-        vks: &VulkanState,
+        vks: &VulkanRenderer,
         bindless: &BindlessResourceSystem,
     ) -> Pipeline {
         let vsm = compile_shader_from_file(T::VERTEX_SHADER_MODULE, &vks.ds.device).unwrap();

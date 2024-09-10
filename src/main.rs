@@ -8,7 +8,7 @@ use ash::vk::{
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
 use vulkan_renderer::{
-    BindlessResourceSystem, FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanState,
+    BindlessResourceSystem, FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanRenderer,
 };
 use winit::{
     dpi::PhysicalPosition,
@@ -39,15 +39,6 @@ fn main() {
         panic!("Failed to start the logger {}", e);
     });
 
-    use crate::shader::*;
-    let _ = compile_shader(&ShaderCompileInfo {
-        src: ShaderSource::File("data/shaders/apps/triangle/tri.vert".into()),
-        entry_point: None,
-        optimize: false,
-        debug_info: false,
-        compile_defs: &[("FRAME_BASED_SHADER", None)],
-    })
-    .expect("Sum tin wong");
     // let spv_code = include_bytes!("test.spv");
     // crate::shader::reflect_shader_module(&spv_code);
 
@@ -105,7 +96,7 @@ struct FractalSimulation {
     ui: UiBackend,
     control_down: bool,
     cursor_pos: (f32, f32),
-    vks: std::pin::Pin<Box<VulkanState>>,
+    vks: std::pin::Pin<Box<VulkanRenderer>>,
     bindless_sys: BindlessResourceSystem,
     ubo_globals: UniqueBuffer,
 }
@@ -147,7 +138,7 @@ impl FractalSimulation {
         log::info!("Cursor initial position {:?}", cursor_pos);
 
         let mut vks = Box::pin(
-            VulkanState::new(get_window_data(window), window.inner_size().into())
+            VulkanRenderer::new(get_window_data(window), window.inner_size().into())
                 .expect("Failed to initialize vulkan ..."),
         );
 

@@ -8,42 +8,68 @@ use ash::{
     extensions::ext::DebugUtils,
     vk::{
         AccessFlags, AccessFlags2, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, Buffer, BufferCreateInfo, BufferImageCopy,
-        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, CommandBuffer,
-        CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferResetFlags,
-        CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags, CommandPoolCreateInfo,
-        ComponentMapping, ComponentSwizzle, CompositeAlphaFlagsKHR,
-        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags, DependencyInfo,
-        DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo,
-        DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
-        DeviceQueueCreateInfo, DeviceSize, Extent2D, Fence, FenceCreateFlags, FenceCreateInfo,
-        Format, Framebuffer, FramebufferCreateInfo, GraphicsPipelineCreateInfo, Image,
-        ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier,
-        ImageMemoryBarrier2, ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags,
-        ImageView, ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCreateInfo,
+        BufferImageCopy, BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
+        ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo,
+        CommandBufferResetFlags, CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags,
+        CommandPoolCreateInfo, CompareOp, ComponentMapping, ComponentSwizzle,
+        CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
+        DebugUtilsMessageTypeFlagsEXT, DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT,
+        DependencyFlags, DependencyInfo, DescriptorBindingFlags, DescriptorBufferInfo,
+        DescriptorImageInfo, DescriptorPool, DescriptorPoolCreateInfo, DescriptorPoolSize,
+        DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding,
+        DescriptorSetLayoutBindingFlagsCreateInfo, DescriptorSetLayoutCreateInfo, DescriptorType,
+        DeviceCreateInfo, DeviceMemory, DeviceQueueCreateInfo, DeviceSize, DynamicState, Extent2D,
+        Fence, FenceCreateFlags, FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo,
+        FrontFace, GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateFlags,
+        ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageMemoryBarrier2,
+        ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags, ImageView,
+        ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
         MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset2D,
         PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceFeatures2,
-        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties, PhysicalDeviceProperties2,
-        PhysicalDeviceType, PhysicalDeviceVulkan11Features, PhysicalDeviceVulkan11Properties,
+        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties2, PhysicalDeviceType,
+        PhysicalDeviceVulkan11Features, PhysicalDeviceVulkan11Properties,
         PhysicalDeviceVulkan12Features, PhysicalDeviceVulkan12Properties,
         PhysicalDeviceVulkan13Features, PhysicalDeviceVulkan13Properties, Pipeline,
-        PipelineBindPoint, PipelineCache, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineRenderingCreateInfo, PipelineStageFlags, PipelineStageFlags2, PresentInfoKHR,
-        PresentModeKHR, PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo,
-        RenderPassCreateInfo, RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler,
-        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo,
-        ShaderStageFlags, SharingMode, SubmitInfo, SubpassContents, SubpassDescription,
-        SurfaceFormatKHR, SurfaceKHR, SurfaceTransformFlagsKHR, SwapchainCreateInfoKHR,
-        SwapchainKHR, WriteDescriptorSet, WHOLE_SIZE,
+        PipelineBindPoint, PipelineCache, PipelineColorBlendStateCreateInfo,
+        PipelineDepthStencilStateCreateInfo, PipelineDynamicStateCreateInfo, PipelineLayout,
+        PipelineLayoutCreateInfo, PipelineMultisampleStateCreateInfo,
+        PipelineRasterizationStateCreateInfo, PipelineRenderingCreateInfo,
+        PipelineShaderStageCreateInfo, PipelineStageFlags, PipelineStageFlags2,
+        PipelineVertexInputStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
+        PushConstantRange, Queue, Rect2D, RenderPass, RenderPassBeginInfo, RenderPassCreateInfo,
+        RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler, SamplerCreateInfo,
+        Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
+        SharingMode, SubmitInfo, SubpassContents, SubpassDescription, SurfaceFormatKHR, SurfaceKHR,
+        SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription, VertexInputRate,
+        WriteDescriptorSet, WHOLE_SIZE,
     },
     Device, Entry, Instance,
 };
+
 use ash::{
     prelude::*,
     vk::{Extent3D, ImageTiling, ImageType},
 };
+
+use crate::shader::ShaderSource;
+
+#[derive(thiserror::Error, Debug)]
+pub enum GraphicsError {
+    #[error("I/O error, file {f}, error {e}")]
+    IoError {
+        f: std::path::PathBuf,
+        e: std::io::Error,
+    },
+    #[error("shaderc generic error: {0}")]
+    ShadercGeneric(String),
+    #[error("shaderc compile error")]
+    ShadercCompilationError(#[from] shaderc::Error),
+    #[error("Vulkan API error")]
+    VulkanApi(#[from] ash::vk::Result),
+    #[error("SPIRV reflection error")]
+    SpirVReflectionError(&'static str),
+}
 
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum VulkanSystemError {
@@ -59,7 +85,7 @@ pub struct UniqueImage {
 
 impl UniqueImage {
     pub fn from_bytes(
-        vks: &mut VulkanState,
+        vks: &mut VulkanRenderer,
         create_info: ImageCreateInfo,
         pixels: &[u8],
     ) -> UniqueImage {
@@ -116,7 +142,7 @@ pub struct UniqueImageView {
 
 impl UniqueImageView {
     pub fn new(
-        vks: &VulkanState,
+        vks: &VulkanRenderer,
         img: &UniqueImage,
         img_view_create_info: ImageViewCreateInfo,
     ) -> UniqueImageView {
@@ -137,7 +163,7 @@ pub struct UniqueSampler {
 }
 
 impl UniqueSampler {
-    pub fn new(vks: &VulkanState, create_info: SamplerCreateInfo) -> UniqueSampler {
+    pub fn new(vks: &VulkanRenderer, create_info: SamplerCreateInfo) -> UniqueSampler {
         let handle = unsafe { vks.ds.device.create_sampler(&create_info, None) }
             .expect("Failed to create sampler");
 
@@ -148,70 +174,63 @@ impl UniqueSampler {
     }
 }
 
+enum PipelineData {
+    Owned {
+        layout: PipelineLayout,
+        descriptor_set_layout: Vec<DescriptorSetLayout>,
+    },
+    Reference {
+        layout: PipelineLayout,
+    },
+}
+
+impl PipelineData {
+    fn layout(&self) -> PipelineLayout {
+        match self {
+            PipelineData::Reference { layout } => *layout,
+            PipelineData::Owned { layout, .. } => *layout,
+        }
+    }
+}
+
 pub struct UniquePipeline {
     device: *const Device,
-    pub handle: Pipeline,
-    pub layout: PipelineLayout,
-    pub descriptor_set_layout: Vec<DescriptorSetLayout>,
+    handle: Pipeline,
+    data: PipelineData,
 }
 
 impl std::ops::Drop for UniquePipeline {
     fn drop(&mut self) {
-        self.descriptor_set_layout
-            .iter()
-            .for_each(|&ds_layout| unsafe {
-                (*self.device).destroy_descriptor_set_layout(ds_layout, None);
-            });
+        match &self.data {
+            PipelineData::Owned {
+                layout,
+                descriptor_set_layout,
+            } => {
+                descriptor_set_layout.iter().for_each(|&ds_layout| unsafe {
+                    (*self.device).destroy_descriptor_set_layout(ds_layout, None);
+                });
+
+                unsafe {
+                    (*self.device).destroy_pipeline_layout(*layout, None);
+                }
+            }
+
+            PipelineData::Reference { .. } => {}
+        }
 
         unsafe {
-            (*self.device).destroy_pipeline_layout(self.layout, None);
             (*self.device).destroy_pipeline(self.handle, None);
         }
     }
 }
 
 impl UniquePipeline {
-    pub fn new(
-        vks: &VulkanState,
-        descriptor_set_layout_info: &[DescriptorSetLayoutCreateInfo],
-        pipeline_create_info: GraphicsPipelineCreateInfo,
-    ) -> UniquePipeline {
-        let descriptor_set_layout = descriptor_set_layout_info
-            .iter()
-            .map(|ds_layout| unsafe {
-                vks.ds
-                    .device
-                    .create_descriptor_set_layout(&ds_layout, None)
-                    .expect("Failed to create descriptor set layout")
-            })
-            .collect::<Vec<_>>();
+    pub fn handle(&self) -> ash::vk::Pipeline {
+        self.handle
+    }
 
-        let layout = unsafe {
-            vks.ds.device.create_pipeline_layout(
-                &PipelineLayoutCreateInfo::builder().set_layouts(&descriptor_set_layout),
-                None,
-            )
-        }
-        .expect("Failed to create pipeline layout");
-
-        let mut pipeline_create_info = pipeline_create_info;
-        pipeline_create_info.layout = layout;
-
-        let p_handles = unsafe {
-            vks.ds.device.create_graphics_pipelines(
-                PipelineCache::null(),
-                &[pipeline_create_info],
-                None,
-            )
-        }
-        .expect("Failed to create pipeline");
-
-        UniquePipeline {
-            device: &vks.ds.device as *const _,
-            handle: p_handles[0],
-            layout,
-            descriptor_set_layout,
-        }
+    pub fn layout(&self) -> ash::vk::PipelineLayout {
+        self.data.layout()
     }
 }
 
@@ -231,13 +250,12 @@ pub fn choose_memory_heap(
         }
     }
 
-    log::error!("Device does not support memory {:?}", required_flags);
-    panic!("Ay blyat");
+    panic!("Device does not support memory {:?}", required_flags);
 }
 
 pub struct UniqueShaderModule {
-    device: *const ash::Device,
-    module: ShaderModule,
+    pub(crate) device: *const ash::Device,
+    pub(crate) module: ShaderModule,
 }
 
 impl std::ops::Deref for UniqueShaderModule {
@@ -363,7 +381,7 @@ impl std::ops::Drop for UniqueBuffer {
 
 impl UniqueBuffer {
     pub fn with_capacity(
-        ds: &VulkanState,
+        ds: &VulkanRenderer,
         usage: BufferUsageFlags,
         memory_flags: MemoryPropertyFlags,
         items: usize,
@@ -468,7 +486,7 @@ impl UniqueBuffer {
     }
 
     pub fn new<T: Sized>(
-        ds: &VulkanState,
+        ds: &VulkanRenderer,
         usage: BufferUsageFlags,
         memory_flags: MemoryPropertyFlags,
         items: usize,
@@ -617,7 +635,7 @@ pub enum RenderState {
     },
 }
 
-pub struct VulkanState {
+pub struct VulkanRenderer {
     resource_loader: ResourceLoadingState,
     pub renderstate: RenderState,
     pub swapchain: VulkanSwapchainState,
@@ -628,7 +646,7 @@ pub struct VulkanState {
     pub entry: Entry,
 }
 
-impl VulkanState {
+impl VulkanRenderer {
     pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
         &self.ds.physical.properties.base.properties.limits
     }
@@ -784,9 +802,21 @@ impl VulkanState {
             RenderState::Renderpass(_) => None,
         }
     }
+
+    pub fn logical(&self) -> &ash::Device {
+        &self.ds.device
+    }
+
+    pub fn logical_raw(&self) -> *const ash::Device {
+        &self.ds.device as *const _
+    }
+
+    pub fn physical(&self) -> ash::vk::PhysicalDevice {
+        self.ds.physical.device
+    }
 }
 
-impl std::ops::Drop for VulkanState {
+impl std::ops::Drop for VulkanRenderer {
     fn drop(&mut self) {}
 }
 
@@ -1188,7 +1218,7 @@ impl VulkanSwapchainState {
     }
 }
 
-impl VulkanState {
+impl VulkanRenderer {
     unsafe extern "system" fn debug_callback_stub(
         message_severity: ash::vk::DebugUtilsMessageSeverityFlagsEXT,
         _message_types: ash::vk::DebugUtilsMessageTypeFlagsEXT,
@@ -1633,7 +1663,7 @@ impl VulkanState {
         })
     }
 
-    pub fn new(wsi: WindowSystemIntegration, window_size: (u32, u32)) -> Option<VulkanState> {
+    pub fn new(wsi: WindowSystemIntegration, window_size: (u32, u32)) -> Option<VulkanRenderer> {
         let entry = Entry::linked();
         let instance_ver = entry
             .try_enumerate_instance_version()
@@ -1656,7 +1686,7 @@ impl VulkanState {
                     | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
                     | DebugUtilsMessageTypeFlagsEXT::VALIDATION,
             )
-            .pfn_user_callback(Some(VulkanState::debug_callback_stub));
+            .pfn_user_callback(Some(VulkanRenderer::debug_callback_stub));
 
         let app_name_engine = [
             CString::new("Vulkan + Rust adventures").unwrap(),
@@ -1728,7 +1758,7 @@ impl VulkanState {
 
         let resource_loader = ResourceLoadingState::new(&device_state);
 
-        Some(VulkanState {
+        Some(VulkanRenderer {
             dbg,
             msgr,
             entry,
@@ -2223,7 +2253,7 @@ impl BindlessResourceSystem {
         frame << 16 | res_id & 0xFFFF
     }
 
-    pub fn new(vks: &VulkanState) -> Self {
+    pub fn new(vks: &VulkanRenderer) -> Self {
         let dpool_sizes = [
             *DescriptorPoolSize::builder()
                 .ty(DescriptorType::UNIFORM_BUFFER)
@@ -2393,6 +2423,388 @@ impl BindlessResourceSystem {
         }
 
         handle
+    }
+}
+
+pub struct InputAssemblyState {
+    pub stride: u32,
+    pub input_rate: VertexInputRate,
+    pub vertex_descriptions: Vec<VertexInputAttributeDescription>,
+}
+
+#[derive(Default)]
+pub struct GraphicsPipelineSetupHelper<'a> {
+    shader_stages: Vec<ShaderSource<'a>>,
+    input_assembly_state: Option<InputAssemblyState>,
+    rasterization_state: Option<PipelineRasterizationStateCreateInfo>,
+    multisample_state: Option<PipelineMultisampleStateCreateInfo>,
+    depth_stencil_state: Option<PipelineDepthStencilStateCreateInfo>,
+    color_blend_state: Option<PipelineColorBlendStateCreateInfo>,
+    dynamic_state: Vec<DynamicState>,
+}
+
+pub struct GraphicsPipelineCreateOptions {
+    pub layout: Option<PipelineLayout>,
+    pub renderpass: Option<RenderPass>,
+    pub subpass: Option<u32>,
+}
+
+impl<'a> GraphicsPipelineSetupHelper<'a> {
+    pub fn new() -> Self {
+        Self {
+            ..Default::default()
+        }
+    }
+
+    pub fn set_input_assembly_state(mut self, state: InputAssemblyState) -> Self {
+        self.input_assembly_state = Some(state);
+        self
+    }
+
+    pub fn add_shader_stage(mut self, stage: ShaderSource<'a>) -> Self {
+        self.shader_stages.push(stage);
+        self
+    }
+
+    pub fn set_raster_state(mut self, raster: PipelineRasterizationStateCreateInfo) -> Self {
+        self.rasterization_state = Some(raster);
+        self
+    }
+
+    pub fn set_multisample_state(mut self, ms: PipelineMultisampleStateCreateInfo) -> Self {
+        self.multisample_state = Some(ms);
+        self
+    }
+
+    pub fn set_depth_stencil_state(mut self, ds: PipelineDepthStencilStateCreateInfo) -> Self {
+        self.depth_stencil_state = Some(ds);
+        self
+    }
+
+    pub fn set_colorblend_state(mut self, cb: PipelineColorBlendStateCreateInfo) -> Self {
+        self.color_blend_state = Some(cb);
+        self
+    }
+
+    pub fn set_dynamic_state(mut self, ds: &[DynamicState]) -> Self {
+        self.dynamic_state.extend(ds.iter());
+        self
+    }
+
+    pub fn create(
+        self,
+        renderer: &VulkanRenderer,
+        options: GraphicsPipelineCreateOptions,
+    ) -> std::result::Result<UniquePipeline, GraphicsError> {
+        assert!(!self.shader_stages.is_empty());
+
+        let mut vertex_inputs_attribute_descriptions: Option<(
+            u32,
+            Vec<VertexInputAttributeDescription>,
+        )> = None;
+
+        let shader_entry_point = std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap();
+
+        let (shader_modules_data, pipeline_shader_stage_create_info) = {
+            use crate::shader::*;
+
+            let mut module_data: Vec<(UniqueShaderModule, ShaderReflection)> = vec![];
+            let mut shader_stage_create_info: Vec<PipelineShaderStageCreateInfo> = vec![];
+
+            for shader_src in self.shader_stages.into_iter() {
+                let (shader_module, shader_stage, shader_reflection) = compile_and_reflect_shader(
+                    renderer.logical(),
+                    &crate::shader::ShaderCompileInfo {
+                        src: &shader_src,
+                        entry_point: Some("main"),
+                        compile_defs: &[],
+                        optimize: false,
+                        debug_info: true,
+                    },
+                )?;
+
+                dbg!(&shader_reflection);
+
+                shader_stage_create_info.push(
+                    *PipelineShaderStageCreateInfo::builder()
+                        .stage(shader_stage)
+                        .module(*shader_module)
+                        .name(&shader_entry_point),
+                );
+
+                if shader_stage == ShaderStageFlags::VERTEX && !shader_reflection.inputs.is_empty()
+                {
+                    assert!(vertex_inputs_attribute_descriptions.is_none());
+                    vertex_inputs_attribute_descriptions = Some((
+                        shader_reflection.inputs_stride,
+                        shader_reflection.inputs.clone(),
+                    ));
+                }
+
+                module_data.push((shader_module, shader_reflection));
+            }
+
+            (module_data, shader_stage_create_info)
+        };
+
+        let pipeline_data = if let Some(layout) = options.layout {
+            PipelineData::Reference { layout }
+        } else {
+            let mut descriptor_set_table =
+                std::collections::HashMap::<u32, DescriptorSetLayoutBinding>::new();
+
+            let mut push_constant_ranges = Vec::<PushConstantRange>::new();
+
+            for (_, reflected_shader) in shader_modules_data.iter() {
+                for (&set_id, set_bindings) in reflected_shader.descriptor_sets.iter() {
+                    if set_bindings.is_empty() {
+                        //
+                        // not used in this stage, ignore it
+                        continue;
+                    }
+
+                    descriptor_set_table
+                        .entry(set_id)
+                        .and_modify(|e| {
+                            if e.descriptor_type == set_bindings[0].descriptor_type {
+                                e.stage_flags |= set_bindings[0].stage_flags;
+                                e.descriptor_count = e.descriptor_count.max(set_bindings[0].descriptor_count);
+                            } else {
+                                panic!("Sets alias to the same slot {set_id} but descriptor types are not compatible {:?}/{:?}",
+                                        e.descriptor_type, set_bindings[0].descriptor_type);
+                            }
+                        })
+                        .or_insert( DescriptorSetLayoutBinding {
+                            descriptor_count: 1024,
+                            ..set_bindings[0]
+                        });
+                }
+
+                //push_constant_ranges = reflected_shader.push_constants.clone();
+                push_constant_ranges.extend_from_slice(&reflected_shader.push_constants);
+            }
+
+            let compare_push_consts = |r0: &PushConstantRange, r1: &PushConstantRange| {
+                if r0.stage_flags != r1.stage_flags {
+                    return r0.stage_flags.cmp(&r1.stage_flags);
+                }
+
+                if r0.offset != r1.offset {
+                    return r0.offset.cmp(&r1.offset);
+                }
+
+                r0.size.cmp(&r1.size)
+            };
+
+            push_constant_ranges.sort_by(compare_push_consts);
+            push_constant_ranges
+                .dedup_by(|r0, r1| compare_push_consts(r0, r1) == std::cmp::Ordering::Equal);
+
+            log::info!("pipeline layout definition {descriptor_set_table:?}");
+            log::info!("pipeline push constant ranges {push_constant_ranges:?}");
+
+            let max_set_id = descriptor_set_table
+                .iter()
+                .map(|(set_id, _)| *set_id)
+                .max()
+                .unwrap_or(0);
+
+            //
+            // Plug descriptor set layout holes.
+            // For example a vertex shader might have layout (set = 0, binding = ...)
+            // and the fragment shader might have layout (set = 4, binding = ...)
+            // For sets 1 to 3 we need to create a "null" descriptor set layout with no bindings
+            // and assign it to those slots when creating the pipeline layout.
+            let empty_descriptor_layout = unsafe {
+                renderer
+                    .logical()
+                    .create_descriptor_set_layout(&DescriptorSetLayoutCreateInfo::builder(), None)
+            }?;
+
+            let descriptor_set_layout = (0..=max_set_id)
+                .map(|set_id| {
+                    if let Some(set_entry) = descriptor_set_table.get(&set_id) {
+                        let binding_flags = [DescriptorBindingFlags::PARTIALLY_BOUND];
+                        let mut set_layout_binding_flags =
+                            *DescriptorSetLayoutBindingFlagsCreateInfo::builder()
+                                .binding_flags(&binding_flags);
+
+                        unsafe {
+                            renderer
+                                .logical()
+                                .create_descriptor_set_layout(
+                                    &DescriptorSetLayoutCreateInfo::builder()
+                                        .push_next(&mut set_layout_binding_flags)
+                                        .bindings(std::slice::from_raw_parts(
+                                            set_entry as *const _,
+                                            1,
+                                        )),
+                                    None,
+                                )
+                                .expect("Monka mega, need a better way to deal with failure here")
+                        }
+                    } else {
+                        empty_descriptor_layout
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            PipelineData::Owned {
+                layout: unsafe {
+                    renderer.logical().create_pipeline_layout(
+                        &PipelineLayoutCreateInfo::builder()
+                            .set_layouts(&descriptor_set_layout)
+                            .push_constant_ranges(&push_constant_ranges),
+                        None,
+                    )
+                }?,
+                descriptor_set_layout,
+            }
+        };
+
+        let mut render_state_create_info = match &renderer.renderstate {
+            RenderState::Dynamic {
+                color_attachments,
+                depth_attachments,
+                stencil_attachments,
+            } => *PipelineRenderingCreateInfo::builder()
+                .color_attachment_formats(color_attachments)
+                .depth_attachment_format(depth_attachments[0])
+                .stencil_attachment_format(stencil_attachments[0]),
+            RenderState::Renderpass(_) => *PipelineRenderingCreateInfo::builder(),
+        };
+
+        let input_assembly_state = *ash::vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST);
+
+        let (inputs_stride, input_rate) = self
+            .input_assembly_state
+            .as_ref()
+            .map(|ia| (ia.stride, ia.input_rate))
+            .unwrap_or_else(|| {
+                if let Some((stride, _)) = vertex_inputs_attribute_descriptions.as_ref() {
+                    (*stride, VertexInputRate::VERTEX)
+                } else {
+                    (0, VertexInputRate::VERTEX)
+                }
+            });
+
+        let std_vertex_binding = [*ash::vk::VertexInputBindingDescription::builder()
+            .stride(inputs_stride)
+            .input_rate(input_rate)
+            .binding(0)];
+
+        let vertex_input_state = self
+            .input_assembly_state
+            .as_ref()
+            .map(|ia| {
+                *PipelineVertexInputStateCreateInfo::builder()
+                    .vertex_attribute_descriptions(&ia.vertex_descriptions)
+                    .vertex_binding_descriptions(&std_vertex_binding)
+            })
+            .unwrap_or_else(|| {
+                vertex_inputs_attribute_descriptions.as_ref().map_or_else(
+                    || *PipelineVertexInputStateCreateInfo::builder(),
+                    |(_, vertex_inputs)| {
+                        *PipelineVertexInputStateCreateInfo::builder()
+                            .vertex_attribute_descriptions(vertex_inputs)
+                            .vertex_binding_descriptions(&std_vertex_binding)
+                    },
+                )
+            });
+
+        let rasterization_state = self.rasterization_state.unwrap_or_else(|| {
+            *PipelineRasterizationStateCreateInfo::builder()
+                .polygon_mode(PolygonMode::FILL)
+                .cull_mode(CullModeFlags::BACK)
+                .front_face(FrontFace::COUNTER_CLOCKWISE)
+                .depth_bias_enable(false)
+                .line_width(1f32)
+        });
+
+        let multisample_state = self.multisample_state.unwrap_or_else(|| {
+            *PipelineMultisampleStateCreateInfo::builder()
+                .rasterization_samples(SampleCountFlags::TYPE_1)
+        });
+
+        let depth_stencil_state = self.depth_stencil_state.unwrap_or_else(|| {
+            *PipelineDepthStencilStateCreateInfo::builder()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(CompareOp::LESS)
+                .depth_bounds_test_enable(true)
+                .min_depth_bounds(0f32)
+                .max_depth_bounds(1f32)
+        });
+
+        let colorblend_attachments = [*ash::vk::PipelineColorBlendAttachmentState::builder()
+            .blend_enable(false)
+            .src_color_blend_factor(BlendFactor::ONE)
+            .dst_color_blend_factor(BlendFactor::ZERO)
+            .color_blend_op(BlendOp::ADD)
+            .src_alpha_blend_factor(BlendFactor::ONE)
+            .dst_alpha_blend_factor(BlendFactor::ZERO)
+            .alpha_blend_op(BlendOp::ADD)
+            .color_write_mask(
+                ColorComponentFlags::R
+                    | ColorComponentFlags::G
+                    | ColorComponentFlags::B
+                    | ColorComponentFlags::A,
+            )];
+
+        let colorblend_state = self.color_blend_state.unwrap_or_else(|| {
+            *PipelineColorBlendStateCreateInfo::builder()
+                .blend_constants([1f32; 4])
+                .attachments(&colorblend_attachments)
+        });
+
+        let dynamic_state =
+            PipelineDynamicStateCreateInfo::builder().dynamic_states(&self.dynamic_state);
+
+        let viewport_state = *ash::vk::PipelineViewportStateCreateInfo::builder();
+
+        let graphics_pipeline_create_info = {
+            let mut pipeline_create_info = GraphicsPipelineCreateInfo::builder()
+                .input_assembly_state(&input_assembly_state)
+                .stages(&pipeline_shader_stage_create_info)
+                .vertex_input_state(&vertex_input_state)
+                .rasterization_state(&rasterization_state)
+                .multisample_state(&multisample_state)
+                .depth_stencil_state(&depth_stencil_state)
+                .color_blend_state(&colorblend_state)
+                .viewport_state(&viewport_state)
+                .dynamic_state(&dynamic_state)
+                .layout(pipeline_data.layout())
+                .render_pass(options.renderpass.unwrap_or_else(|| RenderPass::null()))
+                .subpass(options.subpass.unwrap_or(0));
+
+            match renderer.renderstate {
+                RenderState::Renderpass(pass) => {
+                    pipeline_create_info = pipeline_create_info.render_pass(pass);
+                }
+                RenderState::Dynamic { .. } => {
+                    pipeline_create_info =
+                        pipeline_create_info.push_next(&mut render_state_create_info);
+                }
+            }
+
+            *pipeline_create_info
+        };
+
+        let pipeline_handles = unsafe {
+            renderer.logical().create_graphics_pipelines(
+                PipelineCache::null(),
+                std::slice::from_raw_parts(&graphics_pipeline_create_info as *const _, 1),
+                None,
+            )
+        }
+        .map_err(|(_, e)| GraphicsError::VulkanApi(e))?;
+
+        Ok(UniquePipeline {
+            device: renderer.logical_raw(),
+            handle: pipeline_handles[0],
+            data: pipeline_data,
+        })
     }
 }
 
