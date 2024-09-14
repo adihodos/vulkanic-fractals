@@ -117,7 +117,7 @@ fn compile_shader_impl(
                 dir_requester.join(requested_path)
             };
 
-            log::info!("requested {requested_src} resolved to {resolved_path:?}");
+            log::info!("Include request:\nrequester {requester}\nrequested {requested_src}\nresolved {resolved_path:?}");
 
             // if let Some(resolved_content) = resolved_includes.get(&resolved_path) {
             //     return Ok(shaderc::ResolvedInclude {
@@ -289,10 +289,12 @@ pub fn reflect_shader_module(
 
     let (vertex_attribute_descriptions, stride) = {
         let mut bits_offset = 0u32;
-        let reflected_attrs = reflect
-            .enumerate_input_variables(entry_point)
-            .map_err(|e| GraphicsError::SpirVReflectionError(e))?;
-        dbg!(reflected_attrs);
+
+        // let reflected_attrs = reflect
+        //     .enumerate_input_variables(entry_point)
+        //     .map_err(|e| GraphicsError::SpirVReflectionError(e))?;
+
+        // dbg!(reflected_attrs);
 
         (
             reflect

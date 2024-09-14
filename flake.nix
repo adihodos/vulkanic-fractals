@@ -61,7 +61,8 @@
           shaderc
           glslang
           xorg.libX11
-          python3
+          python311
+          renderdoc
 
           shaderc
           shaderc.bin

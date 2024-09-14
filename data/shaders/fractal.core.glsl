@@ -1,6 +1,5 @@
-#extension GL_EXT_nonuniform_qualifier : require
-
-layout (std140) buffer;
+#ifndef FRACTAL_CORE_GLSL_INCLUDED
+#define FRACTAL_CORE_GLSL_INCLUDED
 
 struct FractalCommonCore {
   uint screen_width;
@@ -36,26 +35,19 @@ struct UiBackendParams {
   uint fontAtlasId;
 };
 
-layout (set = 2, binding = 0) uniform GlobalParameters {
-  // mat4 worldViewProj;
-  uint frameId;
-} g_GlobalParams[];
-
-layout (set = 0, binding = 0) readonly buffer GlobalJuliaParamsBuffer  {
+layout (set = 1, binding = 0) readonly buffer GlobalJuliaParamsBuffer  {
   JuliaFractalParams p[];
 } g_JuliaFractalParams[];
 
-layout (set = 0, binding = 0) readonly buffer GlobalMandelbrotParamsBuffer {
+layout (set = 1, binding = 0) readonly buffer GlobalMandelbrotParamsBuffer {
   MandelbrotFractalParams p[];
 } g_MandelbrotFractalParams[];
 
-layout (set = 0, binding = 0) readonly buffer GlobalUiParamsBuffer {
+layout (set = 1, binding = 0) readonly buffer GlobalUiParamsBuffer {
   UiBackendParams p[];
 } g_UiBackendParams[];
 
-layout (set = 1, binding = 0) uniform sampler2D g_GlobalTexture2DPool[];
-layout (set = 1, binding = 0) uniform sampler1DArray g_GlobalColorPalette[];
+layout (set = 2, binding = 0) uniform sampler2D g_GlobalTexture2DPool[];
+layout (set = 2, binding = 0) uniform sampler1DArray g_GlobalColorPalette[];
 
-layout (push_constant) uniform GlobalResourceId {
-  uint id;
-} g_UniqueResourceId;
+#endif // !defined FRACTAL_CORE_GLSL_INCLUDED

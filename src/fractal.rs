@@ -12,10 +12,10 @@ use enum_iterator::{next_cycle, previous_cycle};
 use crate::{
     shader::ShaderSource,
     vulkan_renderer::{
-        BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext,
+        BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, GlobalPushConstant,
         GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, UniqueBuffer,
         UniqueBufferMapping, UniqueImage, UniqueImageView, UniquePipeline, UniqueSampler,
-        VulkanRenderer,
+        VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
     },
     InputState,
 };
@@ -382,7 +382,7 @@ impl FractalCoreParams for JuliaCPU2GPU {
 impl JuliaCPU2GPU {
     fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType, palette_handle: u32) -> JuliaCPU2GPU {
         use crevice::glsl::GlslStruct;
-        log::info!("Julia GLSL {}", Self::glsl_definition());
+        log::trace!("Julia GLSL {}", Self::glsl_definition());
         Self {
             core: FractalCommonCore::new::<JuliaCPU2GPU>(palette_handle),
             c_x,
@@ -800,8 +800,7 @@ impl Mandelbrot {
 
 struct FractalGPUState {
     pipeline: UniquePipeline,
-    ubo_params: UniqueBuffer,
-    ubo_size: usize,
+    ubo_params: VulkanBuffer,
     ubo_handle: BindlessResourceHandle,
     palettes: UniqueImage,
     palettes_view: UniqueImageView,
@@ -924,24 +923,32 @@ impl FractalGPUState {
             )
             .expect("Oyyy blyat, failed to create pipeline");
 
-        let ubo_size = T::ssbo_size();
-        let ubo_params = UniqueBuffer::with_capacity(
+        let ubo_params = VulkanBuffer::create(
             vks,
-            BufferUsageFlags::STORAGE_BUFFER,
-            MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-            vks.swapchain.max_frames as usize,
-            T::ssbo_size(),
-        );
+            &VulkanBufferCreateInfo {
+                name_tag: None,
+                work_package: None,
+                usage: BufferUsageFlags::STORAGE_BUFFER,
+                memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
+                    | MemoryPropertyFlags::HOST_VISIBLE,
+                slabs: vks.swapchain.max_frames as usize,
+                item_size: T::ssbo_size(),
+                item_count: 1,
+                initial_data: &[],
+            },
+        )
+        .expect("Failed to create fractal parameters buffer");
 
-        let ubo_handle = bindless.register_ssbo(&vks.device_state, &ubo_params);
+        let ubo_handle = bindless.register_storage_buffer(&ubo_params);
         let (palettes, palettes_view, sampler) = Self::make_palettes(vks);
         let palette_handle = bindless.register_image(&vks.device_state, &palettes_view, &sampler);
+
+        log::info!("fractal ubo {ubo_handle:?}");
 
         Self {
             pipeline,
             ubo_params,
             ubo_handle,
-            ubo_size,
             palettes,
             palettes_view,
             sampler,
@@ -957,13 +964,13 @@ impl FractalGPUState {
 
         //
         // copy params
-        UniqueBufferMapping::new(
-            &self.ubo_params,
-            &vks.device_state,
-            Some(self.ubo_params.aligned_item_size * context.current_frame_id as usize),
-            Some(self.ubo_params.aligned_item_size),
-        )
-        .write_data(gpu_data);
+
+        self.ubo_params
+            .map_slab(vks, context.current_frame_id)
+            .map(|mapped_buffer| {
+                mapped_buffer.write_data(gpu_data);
+            })
+            .expect("Failed to map GPU buffer");
 
         unsafe {
             vks.device_state.device.cmd_set_viewport_with_count(
@@ -993,7 +1000,8 @@ impl FractalGPUState {
                 self.pipeline.layout(),
                 ShaderStageFlags::ALL,
                 0,
-                &self.ubo_handle.get_id().to_le_bytes(),
+                &GlobalPushConstant::from_resource(self.ubo_handle, context.current_frame_id)
+                    .to_gpu(),
             );
 
             vks.device_state

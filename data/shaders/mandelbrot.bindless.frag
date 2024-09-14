@@ -1,6 +1,7 @@
 #version 460 core
 
-#include "bindless.common.glsl"
+#include "core/bindless.core.glsl"
+#include "fractal.core.glsl"
 
 layout (location = 0) out vec4 FragColor;
 
@@ -235,9 +236,11 @@ MandelbrotResult mandelbrot_burning_ship(in Complex z, in Complex c, in uint max
 }
 
 void main() {
-  const uint frameId = g_GlobalParams.frameId;
-  const uint offset = g_UniqueResourceId.id;
-  const MandelbrotFractalParams mandel_params = g_MandelbrotFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
+    const uvec2 global_data = unpack_global_pushconst();
+    const uint frame_id = global_data.x;
+    const uint buffer_idx = global_data.y;
+
+  const MandelbrotFractalParams mandel_params = g_MandelbrotFractalParams[buffer_idx].p[0];
   const FractalCommonCore params = mandel_params.cc;
 
   const Complex c = screen_coords_to_complex_coords(
@@ -248,7 +251,7 @@ void main() {
     params.fymin, 
     params.fymax, 
     params.screen_width, 
-    params.screen_height);
+   params.screen_height);
 
   Complex z = Complex(0.0, 0.0);
 
@@ -294,7 +297,7 @@ void main() {
     break;
 
   case COLORING_PALETTE:
-    color = texture(g_GlobalColorPalette[nonuniformEXT(params.palette_handle)],
+    color = texture(g_GlobalColorPalette[params.palette_handle],
         vec2(float(res.mu) / float(params.iterations), params.palette_idx)).rgb;
     break;
   }

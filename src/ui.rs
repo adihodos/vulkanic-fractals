@@ -25,8 +25,9 @@ use winit::{
 
 use crate::shader::ShaderSource;
 use crate::vulkan_renderer::{
-    BindlessResourceHandle, BindlessResourceSystem, GraphicsPipelineCreateOptions,
-    GraphicsPipelineSetupHelper, InputAssemblyState, UniquePipeline,
+    BindlessResourceHandle, BindlessResourceSystem, GlobalPushConstant,
+    GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, InputAssemblyState, UniquePipeline,
+    VulkanBuffer, VulkanBufferCreateInfo,
 };
 use crate::{
     vulkan_renderer::{UniqueImage, UniqueImageView, UniqueSampler},
@@ -250,7 +251,7 @@ struct UiBackendParams {
 struct UiRenderState {
     vertex_buffer: UniqueBuffer,
     index_buffer: UniqueBuffer,
-    ubo_vs: UniqueBuffer,
+    ubo_vs: VulkanBuffer,
     ubo_handle: BindlessResourceHandle,
     font_atlas_img: UniqueImage,
     font_atlas_img_view: UniqueImageView,
@@ -359,14 +360,24 @@ impl UiBackend {
             (Self::MAX_INDICES * vks.swapchain.max_frames) as usize,
         );
 
-        let ubo_vs = UniqueBuffer::new::<UiBackendParams>(
+        let ubo_vs = VulkanBuffer::create(
             vks,
-            BufferUsageFlags::STORAGE_BUFFER,
-            MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-            vks.swapchain.max_frames as usize,
-        );
+            &VulkanBufferCreateInfo {
+                name_tag: Some("UI Backend UBO"),
+                work_package: None,
+                usage: BufferUsageFlags::STORAGE_BUFFER,
+                memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
+                    | MemoryPropertyFlags::HOST_VISIBLE,
+                slabs: vks.swapchain.max_frames as usize,
+                item_size: std::mem::size_of::<UiBackendParams>(),
+                item_count: 1,
+                initial_data: &[],
+            },
+        )
+        .expect("Failed to create fractal UBO");
 
-        let ubo_handle = bindless_sys.register_ssbo(&vks.device_state, &ubo_vs);
+        let ubo_handle = bindless_sys.register_storage_buffer(&ubo_vs);
+        log::info!("ui ubo {ubo_handle:?}");
 
         let font_files = [
             "data/fonts/iosevka-ss03-regular.ttf",
@@ -862,20 +873,22 @@ impl UiBackend {
             //
             // push transform
 
-            UniqueBufferMapping::new(
-                &self.rs.ubo_vs,
-                &vks.device_state,
-                Some(size_of::<UiBackendParams>() * frame_context.current_frame_id as usize),
-                Some(size_of::<UiBackendParams>()),
-            )
-            .write_data(std::slice::from_ref(&transform));
+            self.rs
+                .ubo_vs
+                .map_slab(&vks, frame_context.current_frame_id)
+                .map(|ubo| ubo.write_data(std::slice::from_ref(&transform)))
+                .expect("Failed to update UI params");
 
             vks.device_state.device.cmd_push_constants(
                 frame_context.cmd_buff,
                 self.rs.bindless_layout,
                 ShaderStageFlags::ALL,
                 0,
-                &self.rs.ubo_handle.get_id().to_le_bytes(),
+                &GlobalPushConstant::from_resource(
+                    self.rs.ubo_handle,
+                    frame_context.current_frame_id,
+                )
+                .to_gpu(),
             );
 
             //

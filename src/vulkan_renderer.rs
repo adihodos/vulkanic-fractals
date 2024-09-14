@@ -1,16 +1,16 @@
 use std::{
     ffi::{c_char, c_void, CString},
-    io::Read,
-    mem::size_of,
+    mem::{size_of, uninitialized},
 };
 
 use ash::{
     extensions::ext::DebugUtils,
     vk::{
         AccessFlags, AccessFlags2, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCreateInfo,
-        BufferImageCopy, BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue,
-        ColorComponentFlags, CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo,
+        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy,
+        BufferCreateFlags, BufferCreateInfo, BufferImageCopy, BufferMemoryRequirementsInfo2,
+        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
+        CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
         CommandBufferResetFlags, CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags,
         CommandPoolCreateInfo, CompareOp, ComponentMapping, ComponentSwizzle,
         CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsMessageSeverityFlagsEXT,
@@ -25,10 +25,10 @@ use ash::{
         ImageCreateInfo, ImageLayout, ImageMemoryBarrier, ImageMemoryBarrier2,
         ImageSubresourceLayers, ImageSubresourceRange, ImageUsageFlags, ImageView,
         ImageViewCreateInfo, ImageViewType, InstanceCreateInfo, MappedMemoryRange,
-        MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements, Offset2D,
-        PhysicalDevice, PhysicalDeviceFeatures, PhysicalDeviceFeatures2,
-        PhysicalDeviceMemoryProperties, PhysicalDeviceProperties2, PhysicalDeviceType,
-        PhysicalDeviceVulkan11Features, PhysicalDeviceVulkan11Properties,
+        MemoryAllocateInfo, MemoryMapFlags, MemoryPropertyFlags, MemoryRequirements,
+        MemoryRequirements2, Offset2D, PhysicalDevice, PhysicalDeviceFeatures,
+        PhysicalDeviceFeatures2, PhysicalDeviceMemoryProperties, PhysicalDeviceProperties2,
+        PhysicalDeviceType, PhysicalDeviceVulkan11Features, PhysicalDeviceVulkan11Properties,
         PhysicalDeviceVulkan12Features, PhysicalDeviceVulkan12Properties,
         PhysicalDeviceVulkan13Features, PhysicalDeviceVulkan13Properties, Pipeline,
         PipelineBindPoint, PipelineCache, PipelineColorBlendStateCreateInfo,
@@ -39,10 +39,10 @@ use ash::{
         PipelineVertexInputStateCreateInfo, PolygonMode, PresentInfoKHR, PresentModeKHR,
         PushConstantRange, Queue, Rect2D, RenderPassBeginInfo, RenderPassCreateInfo,
         RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler, SamplerCreateInfo,
-        Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderModuleCreateInfo, ShaderStageFlags,
-        SharingMode, SubmitInfo, SubpassContents, SubpassDescription, SurfaceFormatKHR, SurfaceKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription, VertexInputRate,
-        WriteDescriptorSet, WHOLE_SIZE,
+        Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderStageFlags, SharingMode, SubmitInfo,
+        SubpassContents, SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR,
+        SwapchainKHR, VertexInputAttributeDescription, VertexInputRate, WriteDescriptorSet,
+        WHOLE_SIZE,
     },
     Device, Entry, Instance,
 };
@@ -51,6 +51,7 @@ use ash::{
     prelude::*,
     vk::{Extent3D, ImageTiling, ImageType},
 };
+use smallvec::SmallVec;
 
 use crate::shader::ShaderSource;
 
@@ -69,6 +70,8 @@ pub enum GraphicsError {
     VulkanApi(#[from] ash::vk::Result),
     #[error("SPIRV reflection error")]
     SpirVReflectionError(&'static str),
+    #[error("Other graphics error")]
+    Generic(String),
 }
 
 #[derive(Copy, Clone, Debug, thiserror::Error)]
@@ -101,7 +104,7 @@ impl UniqueImage {
                     .memory_type_index(choose_memory_heap(
                         &memory_req,
                         MemoryPropertyFlags::DEVICE_LOCAL,
-                        &vks.device_state.physical,
+                        vks.memory_properties(),
                     )),
                 None,
             )
@@ -246,11 +249,11 @@ impl UniquePipeline {
 pub fn choose_memory_heap(
     memory_req: &MemoryRequirements,
     required_flags: MemoryPropertyFlags,
-    physical: &VulkanPhysicalDeviceState,
+    memory_properties: &PhysicalDeviceMemoryProperties,
 ) -> u32 {
     for memory_type in 0..32 {
         if (memory_req.memory_type_bits & (1u32 << memory_type)) != 0 {
-            if physical.memory_properties.memory_types[memory_type]
+            if memory_properties.memory_types[memory_type]
                 .property_flags
                 .contains(required_flags)
             {
@@ -283,88 +286,243 @@ impl std::ops::Drop for UniqueShaderModule {
     }
 }
 
-fn shader_include_resolver(
-    req_file: &str,
-    _inc_type: shaderc::IncludeType,
-    src_file: &str,
-    _inc_depth: usize,
-) -> shaderc::IncludeCallbackResult {
-    let path = std::path::Path::new(src_file);
-    let dir = path.parent().unwrap();
-    let include_file_path = dir.join(req_file);
-
-    let mut f = std::fs::File::open(&include_file_path).map_err(|e| e.to_string())?;
-    let mut s = String::new();
-    f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-
-    Ok(shaderc::ResolvedInclude {
-        resolved_name: include_file_path.to_str().unwrap().into(),
-        content: s,
-    })
+pub struct VulkanBufferCreateInfo<'a> {
+    pub name_tag: Option<&'a str>,
+    pub work_package: Option<WorkPackageHandle>,
+    pub usage: BufferUsageFlags,
+    pub memory_properties: MemoryPropertyFlags,
+    pub slabs: usize,
+    pub item_size: usize,
+    pub item_count: usize,
+    pub initial_data: &'a [&'a [u8]],
 }
 
-pub fn compile_shader_from_file<P: AsRef<std::path::Path>>(
-    p: P,
-    vk_dev: &ash::Device,
-) -> Option<UniqueShaderModule> {
-    use shaderc::*;
+pub struct VulkanBuffer {
+    device: *const Device,
+    pub buffer: Buffer,
+    pub memory: DeviceMemory,
+    pub slabs: usize,
+    pub items_in_slab: usize,
+    pub item_size: usize,
+    pub aligned_slab_size: usize,
+}
 
-    let mut compile_options = CompileOptions::new().unwrap();
-    compile_options.set_source_language(SourceLanguage::GLSL);
-    compile_options.set_target_env(TargetEnv::Vulkan, EnvVersion::Vulkan1_2 as u32);
-    compile_options.set_generate_debug_info();
-    compile_options.set_warnings_as_errors();
-    compile_options.set_include_callback(shader_include_resolver);
+impl VulkanBuffer {
+    pub fn size_bytes(&self) -> usize {
+        self.aligned_slab_size * self.slabs
+    }
 
-    let shader_type = p
-        .as_ref()
-        .extension()
-        .map(|ext| ext.to_str())
-        .flatten()
-        .map(|ext| match ext {
-            "vert" => ShaderKind::Vertex,
-            "frag" => ShaderKind::Fragment,
-            "geom" => ShaderKind::Geometry,
-            _ => todo!("Shader type not handled"),
-        })
-        .unwrap();
+    pub fn create(
+        renderer: &mut VulkanRenderer,
+        create_info: &VulkanBufferCreateInfo,
+    ) -> std::result::Result<VulkanBuffer, GraphicsError> {
+        let memory_host_access: MemoryPropertyFlags = MemoryPropertyFlags::HOST_VISIBLE
+            | MemoryPropertyFlags::HOST_COHERENT
+            | MemoryPropertyFlags::HOST_CACHED;
 
-    let src_code = std::fs::read_to_string(&p).expect(&format!(
-        "Failed to read shader file {}",
-        p.as_ref().display()
-    ));
-
-    let compiler = Compiler::new().unwrap();
-    let compile_result = compiler.compile_into_spirv(
-        &src_code,
-        shader_type,
-        p.as_ref().as_os_str().to_str().unwrap(),
-        "main",
-        Some(&compile_options),
-    );
-
-    compile_result
-        .map(|compiled_code| {
-            let module = unsafe {
-                vk_dev.create_shader_module(
-                    &ShaderModuleCreateInfo::builder().code(compiled_code.as_binary()),
-                    None,
-                )
+        let alignment = if create_info.memory_properties.intersects(memory_host_access) {
+            renderer.limits().non_coherent_atom_size
+        } else {
+            //
+            // no host access, must have initial data
+            if create_info.initial_data.is_empty() {
+                Err(GraphicsError::Generic(
+                    "Buffer has no host access flags but is missing initial data".into(),
+                ))?;
             }
-            .expect("Failed to create shader module from bytecode ...");
-            UniqueShaderModule {
-                module,
-                device: vk_dev as *const _,
+
+            if create_info
+                .usage
+                .intersects(BufferUsageFlags::UNIFORM_BUFFER)
+            {
+                renderer.limits().min_uniform_buffer_offset_alignment
+            } else if create_info
+                .usage
+                .intersects(BufferUsageFlags::STORAGE_BUFFER)
+            {
+                renderer.limits().min_storage_buffer_offset_alignment
+            } else {
+                renderer.limits().non_coherent_atom_size
             }
-        })
-        .map_err(|e| {
-            log::error!(
-                "Failed to compile shader {}, error:\n{}",
-                p.as_ref().as_os_str().to_str().unwrap(),
-                e.to_string()
+        };
+
+        let aligned_slab_size = round_up(
+            create_info.item_size * create_info.item_count,
+            alignment as usize,
+        );
+        let aligned_allocation_size = aligned_slab_size * create_info.slabs as usize;
+        let initial_data_size = create_info
+            .initial_data
+            .iter()
+            .map(|data_slice| data_slice.len())
+            .sum::<usize>();
+
+        assert!(initial_data_size <= aligned_allocation_size);
+
+        //
+        // when creating an immutable buffer add TRANSFER_DST to usage flags
+        let usage_flags = create_info.usage
+            | (if create_info.memory_properties.intersects(memory_host_access) {
+                BufferUsageFlags::empty()
+            } else {
+                BufferUsageFlags::TRANSFER_DST
+            });
+
+        let device = renderer.device_raw();
+        let buffer = unsafe {
+            (*device).create_buffer(
+                &BufferCreateInfo::builder()
+                    .size(aligned_allocation_size as u64)
+                    .usage(usage_flags)
+                    .sharing_mode(SharingMode::EXCLUSIVE),
+                None,
+            )
+        }?;
+
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                (*device).destroy_buffer(buffer, None);
+            }
+        }
+
+        // TODO: debug name tagging
+
+        let buffer_memory = unsafe {
+            let mut memory_requirements = *MemoryRequirements2::builder();
+            (*device).get_buffer_memory_requirements2(
+                &BufferMemoryRequirementsInfo2::builder().buffer(buffer),
+                &mut memory_requirements,
             );
+
+            (*device).allocate_memory(
+                &MemoryAllocateInfo::builder()
+                    .allocation_size(memory_requirements.memory_requirements.size)
+                    .memory_type_index(choose_memory_heap(
+                        &memory_requirements.memory_requirements,
+                        create_info.memory_properties,
+                        renderer.memory_properties(),
+                    )),
+                None,
+            )
+        }?;
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                (*device).free_memory(buffer_memory, None);
+            }
+        }
+
+        unsafe { (*device).bind_buffer_memory(buffer, buffer_memory, 0) }?;
+
+        if create_info.memory_properties.intersects(memory_host_access) {
+            //
+            // not immutable so just copy everything there is to copy
+            if initial_data_size != 0 {
+                UniqueBufferMapping::map_memory(
+                    renderer.logical(),
+                    buffer_memory,
+                    0,
+                    aligned_allocation_size,
+                )
+                .map(|buffer_mapping| {
+                    let _ =
+                        create_info
+                            .initial_data
+                            .iter()
+                            .fold(0isize, |copy_offset, data| unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    data.as_ptr(),
+                                    (buffer_mapping.mapped_memory as *mut u8).offset(copy_offset),
+                                    data.len(),
+                                );
+                                copy_offset + data.len() as isize
+                            });
+                })?;
+            }
+        } else {
+            //
+            // immutable buffer, create a staging buffer to use as a copy source then issue a copy command
+            assert!(create_info.work_package.is_some());
+
+            let BufferWithBoundDeviceMemory(staging_buffer, staging_buffer_memory) =
+                renderer.create_staging_buffer(aligned_allocation_size)?;
+
+            let mut copy_offset = 0isize;
+            let copy_regions = create_info
+                .initial_data
+                .iter()
+                .map(|copy_slice| {
+                    let copy_buffer = *BufferCopy::builder()
+                        .src_offset(copy_offset as DeviceSize)
+                        .dst_offset(copy_offset as DeviceSize)
+                        .size(copy_slice.len() as DeviceSize);
+                    copy_offset += copy_slice.len() as isize;
+
+                    copy_buffer
+                })
+                .collect::<smallvec::SmallVec<[BufferCopy; 4]>>();
+
+            //
+            // copy data from host to GPU staging buffer
+            UniqueBufferMapping::map_memory(
+                renderer.logical(),
+                staging_buffer_memory,
+                0,
+                aligned_allocation_size,
+            )
+            .map(|bmap| {
+                let _ = create_info
+                    .initial_data
+                    .iter()
+                    .fold(0isize, |copy_offset, data| unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            data.as_ptr(),
+                            (bmap.mapped_memory as *mut u8).offset(copy_offset),
+                            data.len(),
+                        );
+                        copy_offset + data.len() as isize
+                    });
+            })?;
+
+            //
+            // copy between staging buffer and destination buffer
+            let WorkPackageHandle(_, work_pkg_cmd_buf) = create_info.work_package.unwrap();
+            unsafe {
+                (*device).cmd_copy_buffer(work_pkg_cmd_buf, staging_buffer, buffer, &copy_regions);
+            }
+        }
+
+        log::info!(
+            "Created buffer item_count {}, item_size {}, alignment {alignment}, slab size {},
+            aligned slab size {aligned_slab_size}, aligned allocation size {aligned_allocation_size}",
+            create_info.item_count,
+            create_info.item_size,
+            aligned_slab_size
+        );
+
+        Ok(VulkanBuffer {
+            device,
+            buffer,
+            memory: buffer_memory,
+            slabs: create_info.slabs,
+            items_in_slab: create_info.item_count,
+            aligned_slab_size,
+            item_size: create_info.item_size,
         })
-        .ok()
+    }
+
+    pub fn map_slab<'a>(
+        &self,
+        renderer: &'a VulkanRenderer,
+        slab: u32,
+    ) -> std::result::Result<UniqueBufferMapping<'a>, GraphicsError> {
+        assert!(slab < self.slabs as u32);
+        UniqueBufferMapping::map_memory(
+            renderer.logical(),
+            self.memory,
+            self.aligned_slab_size * slab as usize,
+            self.aligned_slab_size,
+        )
+    }
 }
 
 pub struct UniqueBuffer {
@@ -464,7 +622,7 @@ impl UniqueBuffer {
                 .device
                 .get_buffer_memory_requirements(buffer)
         };
-        let mem_heap = choose_memory_heap(&memory_req, memory_flags, &ds.device_state.physical);
+        let mem_heap = choose_memory_heap(&memory_req, memory_flags, ds.memory_properties());
 
         let buffer_memory = unsafe {
             ds.device_state.device.allocate_memory(
@@ -520,13 +678,38 @@ fn round_up(num_to_round: usize, multiple: usize) -> usize {
 pub struct UniqueBufferMapping<'a> {
     buffer_mem: DeviceMemory,
     mapped_memory: *mut c_void,
-    offset: usize,
     device: &'a Device,
+    offset: usize,
     range_start: usize,
     range_size: usize,
 }
 
 impl<'a> UniqueBufferMapping<'a> {
+    pub fn map_memory(
+        device: &'a ash::Device,
+        device_memory: DeviceMemory,
+        offset: usize,
+        map_size: usize,
+    ) -> std::result::Result<Self, GraphicsError> {
+        let mapped_memory = unsafe {
+            device.map_memory(
+                device_memory,
+                offset as u64,
+                map_size as u64,
+                MemoryMapFlags::empty(),
+            )
+        }?;
+
+        Ok(Self {
+            buffer_mem: device_memory,
+            mapped_memory,
+            device,
+            offset,
+            range_start: offset,
+            range_size: map_size,
+        })
+    }
+
     pub fn new(
         buf: &UniqueBuffer,
         ds: &'a VulkanDeviceState,
@@ -564,7 +747,7 @@ impl<'a> UniqueBufferMapping<'a> {
         }
     }
 
-    pub fn write_data<T: Sized + Copy>(&mut self, data: &[T]) {
+    pub fn write_data<T: Sized + Copy>(&self, data: &[T]) {
         unsafe {
             let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
             std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
@@ -595,6 +778,59 @@ impl<'a> std::ops::Drop for UniqueBufferMapping<'a> {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+pub struct WorkPackageHandle(u32, CommandBuffer);
+
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub struct BufferWithBoundDeviceMemory(Buffer, DeviceMemory);
+
+struct WorkPackageTrackingInfo {
+    staging_buffers: Vec<BufferWithBoundDeviceMemory>,
+    fence: Fence,
+    cmd_buff: CommandBuffer,
+}
+
+struct WorkPackageSystem {
+    queue: Queue,
+    cmd_pool: CommandPool,
+    command_buffers: Vec<CommandBuffer>,
+    staging_buffers: Vec<Buffer>,
+    staging_memory: Vec<DeviceMemory>,
+    fences: Vec<Fence>,
+    packages: std::collections::hash_map::HashMap<WorkPackageHandle, WorkPackageTrackingInfo>,
+}
+
+impl WorkPackageSystem {
+    fn create(
+        ds: &VulkanDeviceState,
+        queue: Queue,
+        queue_family: u32,
+    ) -> std::result::Result<WorkPackageSystem, GraphicsError> {
+        let cmd_pool = unsafe {
+            ds.device.create_command_pool(
+                &CommandPoolCreateInfo::builder()
+                    .flags(
+                        CommandPoolCreateFlags::TRANSIENT
+                            | CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                    )
+                    .queue_family_index(queue_family),
+                None,
+            )
+        }?;
+
+        Ok(WorkPackageSystem {
+            queue,
+            cmd_pool,
+            command_buffers: vec![],
+            staging_buffers: vec![],
+            staging_memory: vec![],
+            fences: vec![],
+            packages: std::collections::HashMap::new(),
+        })
+    }
+}
+
+// TODO: rewrite the resource loading
 struct ResourceLoadingState {
     cmd_buf: CommandBuffer,
     fence: Fence,
@@ -650,6 +886,7 @@ pub enum RenderState {
 
 pub struct VulkanRenderer {
     resource_loader: ResourceLoadingState,
+    work_pkg_sys: WorkPackageSystem,
     pub renderstate: RenderState,
     pub swapchain: VulkanSwapchainState,
     pub device_state: VulkanDeviceState,
@@ -660,8 +897,15 @@ pub struct VulkanRenderer {
 }
 
 impl VulkanRenderer {
+    pub fn setup(&self) -> (u32,) {
+        (self.swapchain.max_frames,)
+    }
     pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
         &self.device_state.physical.properties.base.properties.limits
+    }
+
+    pub fn memory_properties(&self) -> &PhysicalDeviceMemoryProperties {
+        &self.device_state.physical.memory_properties
     }
 
     pub fn features(&self) -> &PhysicalDeviceFeatures {
@@ -670,6 +914,14 @@ impl VulkanRenderer {
 
     pub fn empty_descriptor_set_layout(&self) -> DescriptorSetLayout {
         self.device_state.empty_descriptor_layout
+    }
+
+    pub fn pipeline_cache(&self) -> PipelineCache {
+        self.device_state.pipeline_cache
+    }
+
+    pub fn device_raw(&self) -> *const ash::Device {
+        &self.device_state.device as *const _
     }
 
     pub fn wait_all_idle(&mut self) {
@@ -834,7 +1086,31 @@ impl VulkanRenderer {
 }
 
 impl std::ops::Drop for VulkanRenderer {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        let device = self.logical();
+
+        self.work_pkg_sys.fences.iter().for_each(|&fence| unsafe {
+            device.destroy_fence(fence, None);
+        });
+
+        unsafe {
+            device.destroy_command_pool(self.work_pkg_sys.cmd_pool, None);
+        }
+
+        self.work_pkg_sys
+            .staging_buffers
+            .iter()
+            .for_each(|&buffer| unsafe {
+                device.destroy_buffer(buffer, None);
+            });
+
+        self.work_pkg_sys
+            .staging_memory
+            .iter()
+            .for_each(|&device_mem| unsafe {
+                device.free_memory(device_mem, None);
+            });
+    }
 }
 
 pub struct DeviceProperties {
@@ -860,6 +1136,7 @@ pub struct VulkanPhysicalDeviceState {
 }
 
 pub struct VulkanDeviceState {
+    pub pipeline_cache: PipelineCache,
     pub descriptor_pool: DescriptorPool,
     pub empty_descriptor_layout: DescriptorSetLayout,
     pub cmd_pool: CommandPool,
@@ -867,6 +1144,17 @@ pub struct VulkanDeviceState {
     pub device: ash::Device,
     pub surface: VulkanSurfaceState,
     pub physical: VulkanPhysicalDeviceState,
+}
+
+impl std::ops::Drop for VulkanDeviceState {
+    fn drop(&mut self) {
+        unsafe {
+            self.device
+                .destroy_descriptor_set_layout(self.empty_descriptor_layout, None);
+            self.device
+                .destroy_pipeline_cache(self.pipeline_cache, None);
+        }
+    }
 }
 
 pub struct VulkanSurfaceKHRState {
@@ -1027,7 +1315,7 @@ impl VulkanSwapchainState {
                             .memory_type_index(choose_memory_heap(
                                 &image_mem_req,
                                 MemoryPropertyFlags::DEVICE_LOCAL,
-                                physical,
+                                &physical.memory_properties,
                             )),
                         None,
                     )
@@ -1677,6 +1965,10 @@ impl VulkanRenderer {
         .expect("Failed to create empty descriptor layout");
 
         Some(VulkanDeviceState {
+            pipeline_cache: unsafe {
+                device.create_pipeline_cache(&ash::vk::PipelineCacheCreateInfo::builder(), None)
+            }
+            .expect("Failed to create pipeline cache"),
             device,
             queue,
             physical: phys_device,
@@ -1781,6 +2073,12 @@ impl VulkanRenderer {
             VulkanSwapchainState::new(&instance, &device_state, renderstate, None).unwrap();
 
         let resource_loader = ResourceLoadingState::new(&device_state);
+        let work_pkg_sys = WorkPackageSystem::create(
+            &device_state,
+            device_state.queue,
+            device_state.physical.queue_family_id,
+        )
+        .expect("Failed to create work package system");
 
         Some(VulkanRenderer {
             dbg,
@@ -1791,6 +2089,7 @@ impl VulkanRenderer {
             swapchain: swapchain_state,
             renderstate,
             resource_loader,
+            work_pkg_sys,
         })
     }
 
@@ -2211,6 +2510,140 @@ impl VulkanRenderer {
             },
         )
     }
+
+    pub fn create_work_package(&mut self) -> std::result::Result<WorkPackageHandle, GraphicsError> {
+        let allocated_cmd_buffers = unsafe {
+            self.logical().allocate_command_buffers(
+                &CommandBufferAllocateInfo::builder()
+                    .command_pool(self.work_pkg_sys.cmd_pool)
+                    .level(CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+        }?;
+
+        let cmd_buff = allocated_cmd_buffers[0];
+        unsafe {
+            self.logical().begin_command_buffer(
+                cmd_buff,
+                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )
+        }?;
+        self.work_pkg_sys.command_buffers.push(cmd_buff);
+
+        let fence = unsafe {
+            self.logical()
+                .create_fence(&FenceCreateInfo::builder(), None)
+        }?;
+        self.work_pkg_sys.fences.push(fence);
+
+        let pkg_idx = self.work_pkg_sys.packages.len() as u32;
+        let pkg_handle = WorkPackageHandle(pkg_idx, cmd_buff);
+        self.work_pkg_sys.packages.insert(
+            pkg_handle,
+            WorkPackageTrackingInfo {
+                staging_buffers: vec![],
+                fence,
+                cmd_buff,
+            },
+        );
+
+        Ok(pkg_handle)
+    }
+
+    pub fn submit_work_package(&mut self, work_pkg: WorkPackageHandle) {
+        self.work_pkg_sys
+            .packages
+            .get_key_value(&work_pkg)
+            .map(|(_, pkg_track_info)| unsafe {
+                let _ = self.logical().end_command_buffer(pkg_track_info.cmd_buff);
+                let _ = self.logical().queue_submit(
+                    self.device_state.queue,
+                    &[*SubmitInfo::builder().command_buffers(&[pkg_track_info.cmd_buff])],
+                    pkg_track_info.fence,
+                );
+            })
+            .or_else(|| panic!("Work package {work_pkg:?} not found"));
+    }
+
+    pub fn wait_on_packages(&self, work_pkgs: &[WorkPackageHandle]) {
+        let wait_fences = work_pkgs
+            .iter()
+            .map(|pkg| {
+                self.work_pkg_sys
+                    .packages
+                    .get_key_value(pkg)
+                    .map(|(_, pkg_entry)| pkg_entry.fence)
+                    .unwrap()
+            })
+            .collect::<Vec<Fence>>();
+
+        let _ = unsafe {
+            self.logical()
+                .wait_for_fences(&wait_fences, true, std::u64::MAX)
+        }
+        .expect("Wait packages failed!");
+    }
+
+    pub fn create_staging_buffer(
+        &mut self,
+        bytes_size: usize,
+    ) -> std::result::Result<BufferWithBoundDeviceMemory, GraphicsError> {
+        let bytes_size = round_up(bytes_size, self.limits().non_coherent_atom_size as usize) as u64;
+
+        let buffer = unsafe {
+            self.logical().create_buffer(
+                &BufferCreateInfo::builder()
+                    .usage(BufferUsageFlags::TRANSFER_SRC)
+                    .size(bytes_size as u64)
+                    .sharing_mode(SharingMode::EXCLUSIVE),
+                None,
+            )
+        }?;
+
+        let device: *const Device = self.logical() as *const _;
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                (*device).destroy_buffer(buffer, None);
+            }
+        };
+
+        let memory_requirements = unsafe {
+            let mut memory_requirements = std::mem::MaybeUninit::<MemoryRequirements2>::uninit();
+
+            self.logical().get_buffer_memory_requirements2(
+                &BufferMemoryRequirementsInfo2::builder().buffer(buffer),
+                &mut *memory_requirements.as_mut_ptr(),
+            );
+
+            memory_requirements.assume_init()
+        };
+
+        let buffer_memory = unsafe {
+            self.logical().allocate_memory(
+                &MemoryAllocateInfo::builder()
+                    .allocation_size(memory_requirements.memory_requirements.size)
+                    .memory_type_index(choose_memory_heap(
+                        &memory_requirements.memory_requirements,
+                        MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
+                        self.memory_properties(),
+                    )),
+                None,
+            )
+        }?;
+
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                (*device).free_memory(buffer_memory, None);
+            }
+        };
+
+        unsafe { self.logical().bind_buffer_memory(buffer, buffer_memory, 0) }?;
+
+        self.work_pkg_sys.staging_buffers.push(buffer);
+        self.work_pkg_sys.staging_memory.push(buffer_memory);
+
+        Ok(BufferWithBoundDeviceMemory(buffer, buffer_memory))
+    }
 }
 
 pub struct FrameRenderContext {
@@ -2223,9 +2656,9 @@ pub struct FrameRenderContext {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
 #[repr(u8)]
 pub enum BindlessResourceType {
+    UniformBuffer,
     Ssbo,
     CombinedImageSampler,
-    UniformBuffer,
 }
 
 impl BindlessResourceType {
@@ -2256,6 +2689,10 @@ impl BindlessResourceHandle {
         self.0 >> 2
     }
 
+    pub fn offset(&self, frame: u32) -> BindlessResourceHandle {
+        Self::new(self.get_type(), self.get_id() + frame)
+    }
+
     pub fn new(ty: BindlessResourceType, id: u32) -> Self {
         match ty {
             BindlessResourceType::Ssbo => Self(id << 2),
@@ -2263,6 +2700,38 @@ impl BindlessResourceHandle {
             BindlessResourceType::UniformBuffer => Self(2 | (id << 2)),
         }
     }
+}
+
+/// Format is
+/// [0..4] frame id [5 .. 15] buffer id
+pub struct GlobalPushConstant(u32);
+
+impl GlobalPushConstant {
+    pub fn from_resource(resource: BindlessResourceHandle, frame_id: u32) -> Self {
+        assert!(frame_id < (1 << 4));
+        assert!(resource.get_id() < 0x7ff);
+        GlobalPushConstant(resource.get_id() << 4 | frame_id)
+    }
+
+    pub fn to_gpu(&self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
+}
+
+impl std::convert::AsRef<[u8]> for GlobalPushConstant {
+    fn as_ref(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(&self.0 as *const _ as *const u8, std::mem::size_of::<u32>())
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct WriteBuffer {
+    buffer: Buffer,
+    slabs: usize,
+    slab_size: usize,
+    idx: u32,
 }
 
 pub struct BindlessResourceSystem {
@@ -2273,6 +2742,10 @@ pub struct BindlessResourceSystem {
     samplers: Vec<BindlessResourceHandle>,
     ubos: Vec<BindlessResourceHandle>,
     bindless_pipeline_layout: PipelineLayout,
+    ubo_idx: u32,
+    ssbo_idx: u32,
+    ubo_pending_writes: Vec<WriteBuffer>,
+    ssbo_pending_writes: Vec<WriteBuffer>,
 }
 
 impl BindlessResourceSystem {
@@ -2372,6 +2845,10 @@ impl BindlessResourceSystem {
             samplers: vec![],
             ubos: vec![],
             bindless_pipeline_layout,
+            ssbo_pending_writes: vec![],
+            ssbo_idx: 0u32,
+            ubo_idx: 0u32,
+            ubo_pending_writes: vec![],
         }
     }
 
@@ -2432,20 +2909,17 @@ impl BindlessResourceSystem {
         handle
     }
 
-    pub fn register_uniform_buffer(
-        &mut self,
-        vks: &VulkanDeviceState,
-        ubo: &UniqueBuffer,
-    ) -> BindlessResourceHandle {
+    fn register_ubo_impl(&mut self, vks: &VulkanRenderer, ubo: Buffer) -> BindlessResourceHandle {
         let idx = self.ubos.len() as u32;
         let handle = BindlessResourceHandle::new(BindlessResourceType::UniformBuffer, idx);
         self.ubos.push(handle);
 
+        let buf_info = *DescriptorBufferInfo::builder()
+            .buffer(ubo)
+            .range(WHOLE_SIZE)
+            .offset(0);
+
         unsafe {
-            let buf_info = *DescriptorBufferInfo::builder()
-                .buffer(ubo.handle)
-                .range(WHOLE_SIZE)
-                .offset(0);
             let write = *WriteDescriptorSet::builder()
                 .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
                 .dst_binding(0)
@@ -2453,11 +2927,134 @@ impl BindlessResourceSystem {
                 .descriptor_type(DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(std::slice::from_ref(&buf_info));
 
-            vks.device
+            vks.logical()
                 .update_descriptor_sets(std::slice::from_ref(&write), &[]);
         }
 
         handle
+    }
+
+    pub fn register_uniform_buffer(
+        &mut self,
+        vks: &VulkanRenderer,
+        ubo: &UniqueBuffer,
+    ) -> BindlessResourceHandle {
+        self.register_ubo_impl(vks, ubo.handle)
+    }
+
+    pub fn register_uniform_buffer_vkbuffer(
+        &mut self,
+        ubo: &VulkanBuffer,
+    ) -> BindlessResourceHandle {
+        let idx = self.ubo_idx;
+        self.ubo_idx += ubo.slabs as u32;
+
+        let handle = BindlessResourceHandle::new(BindlessResourceType::UniformBuffer, idx);
+        self.ubo_pending_writes.push(WriteBuffer {
+            buffer: ubo.buffer,
+            slabs: ubo.slabs,
+            slab_size: ubo.aligned_slab_size,
+            idx,
+        });
+
+        handle
+    }
+
+    pub fn register_storage_buffer(&mut self, ssbo: &VulkanBuffer) -> BindlessResourceHandle {
+        let idx = self.ssbo_idx;
+        self.ssbo_idx += ssbo.slabs as u32;
+
+        let handle = BindlessResourceHandle::new(BindlessResourceType::Ssbo, idx);
+        self.ssbo_pending_writes.push(WriteBuffer {
+            buffer: ssbo.buffer,
+            slabs: ssbo.slabs,
+            slab_size: ssbo.aligned_slab_size,
+            idx,
+        });
+
+        handle
+    }
+
+    pub fn flush_pending_updates(&mut self, vks: &VulkanRenderer) {
+        let pending_writes = self
+            .ubo_pending_writes
+            .iter()
+            .chain(self.ssbo_pending_writes.iter())
+            .map(|pending_write| pending_write.slabs)
+            .sum();
+
+        if pending_writes == 0 {
+            return;
+        }
+
+        let mut buffer_infos = SmallVec::<[DescriptorBufferInfo; 8]>::with_capacity(pending_writes);
+        let mut descriptor_writes = SmallVec::<[WriteDescriptorSet; 2]>::new();
+
+        if !self.ubo_pending_writes.is_empty() {
+            let dst_array_element = self.ubo_pending_writes[0].idx;
+
+            for pending_write in self.ubo_pending_writes.drain(..) {
+                buffer_infos.extend((0..pending_write.slabs).map(|slab| {
+                    *DescriptorBufferInfo::builder()
+                        .buffer(pending_write.buffer)
+                        .offset((slab * pending_write.slab_size) as DeviceSize)
+                        .range(pending_write.slab_size as DeviceSize)
+                }));
+            }
+
+            descriptor_writes.push(
+                *WriteDescriptorSet::builder()
+                    .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
+                    .dst_binding(0)
+                    .dst_array_element(dst_array_element)
+                    .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                    .buffer_info(&buffer_infos[0..]),
+            );
+        }
+
+        if !self.ssbo_pending_writes.is_empty() {
+            let dst_array_element = self.ssbo_pending_writes[0].idx;
+            let ssbo_offset = buffer_infos.len();
+
+            for pending_write in self.ssbo_pending_writes.drain(..) {
+                buffer_infos.extend((0..pending_write.slabs).map(|slab| {
+                    *DescriptorBufferInfo::builder()
+                        .buffer(pending_write.buffer)
+                        .offset((slab * pending_write.slab_size) as DeviceSize)
+                        .range(pending_write.slab_size as DeviceSize)
+                }));
+            }
+
+            descriptor_writes.push(
+                *WriteDescriptorSet::builder()
+                    .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
+                    .dst_binding(0)
+                    .dst_array_element(dst_array_element)
+                    .descriptor_type(DescriptorType::STORAGE_BUFFER)
+                    .buffer_info(&buffer_infos[ssbo_offset..]),
+            );
+        }
+
+        dbg!(&buffer_infos);
+        dbg!(&descriptor_writes);
+
+        unsafe {
+            vks.logical()
+                .update_descriptor_sets(&descriptor_writes, &[]);
+        }
+    }
+
+    pub fn bind_descriptors(&self, cmd_buff: CommandBuffer, vks: &VulkanRenderer) {
+        unsafe {
+            vks.logical().cmd_bind_descriptor_sets(
+                cmd_buff,
+                PipelineBindPoint::GRAPHICS,
+                self.bindless_pipeline_layout,
+                0,
+                &self.descriptor_sets,
+                &[],
+            )
+        }
     }
 }
 
@@ -2820,7 +3417,7 @@ impl<'a> GraphicsPipelineSetupHelper<'a> {
 
         let pipeline_handles = unsafe {
             renderer.logical().create_graphics_pipelines(
-                PipelineCache::null(),
+                renderer.pipeline_cache(),
                 std::slice::from_raw_parts(&graphics_pipeline_create_info as *const _, 1),
                 None,
             )

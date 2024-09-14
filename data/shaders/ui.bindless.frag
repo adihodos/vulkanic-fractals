@@ -1,6 +1,6 @@
 #version 460 core
 
-#include "bindless.common.glsl"
+#include "core/bindless.core.glsl"
 
 layout (location = 0) in VS_OUT_FS_IN {
   vec2 uv;
@@ -11,5 +11,9 @@ layout (location = 0) in VS_OUT_FS_IN {
 layout (location = 0) out vec4 FinalFragColor;
 
 void main() {
-  FinalFragColor = vec4(texture(g_GlobalTexture2DPool[nonuniformEXT(fs_in.atlas_id)], fs_in.uv).r) * fs_in.color;
+  const uvec2 global_data = unpack_global_pushconst();
+  const uint frame_id = global_data.x;
+  const uint buffer_idx = global_data.y;
+
+  FinalFragColor = vec4(texture(g_Textures2DGlobal[fs_in.atlas_id], fs_in.uv).r) * fs_in.color;
 }

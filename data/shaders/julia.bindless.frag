@@ -1,6 +1,7 @@
 #version 460 core
 
-#include "bindless.common.glsl"
+#include "core/bindless.core.glsl"
+#include "fractal.core.glsl"
 
 layout (location = 0) out vec4 FragColor;
 
@@ -290,10 +291,11 @@ JuliaResult julia_sine(in Complex z, in Complex c, in uint max_iterations) {
 }
 
 void main() {
-  const uint frameId = g_GlobalParams.frameId;
-  const uint offset = g_UniqueResourceId.id;
-  const JuliaFractalParams j_params = g_JuliaFractalParams[nonuniformEXT(offset)].p[nonuniformEXT(frameId)];
-  const FractalCommonCore params = j_params.cc;
+    const uvec2 global_data = unpack_global_pushconst();
+    const uint frame_id = global_data.x;
+    const uint buffer_idx = global_data.y;
+    const JuliaFractalParams j_params = g_JuliaFractalParams[buffer_idx].p[0];
+    const FractalCommonCore params = j_params.cc;
 
     const Complex c = Complex(j_params.cx, j_params.cy);
     Complex z = screen_coords_to_complex_coords(
@@ -347,8 +349,8 @@ void main() {
 
         case COLORING_PALETTE:
             color = texture(
-			    g_GlobalColorPalette[nonuniformEXT(params.palette_handle)],
-			    vec2(float(res.iterations)/float(params.iterations), float(params.palette_idx))).rgb;
+                g_GlobalColorPalette[params.palette_handle],
+                vec2(float(res.iterations)/float(params.iterations), float(params.palette_idx))).rgb;
 	      //color_palette(smoothing_factor, params.iterations);
             break;
 

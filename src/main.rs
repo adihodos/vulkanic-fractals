@@ -5,7 +5,8 @@ use ash::vk::{BufferUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
 use vulkan_renderer::{
-    BindlessResourceSystem, FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanRenderer,
+    BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, UniqueBuffer,
+    UniqueBufferMapping, VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
 };
 use winit::{
     dpi::PhysicalPosition,
@@ -92,7 +93,8 @@ struct FractalSimulation {
     cursor_pos: (f32, f32),
     vks: std::pin::Pin<Box<VulkanRenderer>>,
     bindless_sys: BindlessResourceSystem,
-    ubo_globals: UniqueBuffer,
+    ubo_globals: VulkanBuffer,
+    ubo_globals_handle: BindlessResourceHandle,
 }
 
 #[cfg(target_os = "windows")]
@@ -114,12 +116,21 @@ fn get_window_data(win: &winit::window::Window) -> vulkan_renderer::WindowSystem
     }
 }
 
-#[derive(Copy, Clone)]
-#[repr(C)]
+#[derive(Copy, Clone, Debug)]
 struct UniformGlobals {
-    // mat: [f32; 16],
+    world_view_proj: [f32; 16],
+    projection: [f32; 16],
+    inv_projection: [f32; 16],
+    view: [f32; 16],
+    ortho_proj: [f32; 16],
+    eye_pos: [f32; 4],
     frame_id: u32,
-    // pad: [u32; 3],
+}
+
+impl std::default::Default for UniformGlobals {
+    fn default() -> Self {
+        unsafe { std::mem::MaybeUninit::<Self>::zeroed().assume_init() }
+    }
 }
 
 impl FractalSimulation {
@@ -139,6 +150,7 @@ impl FractalSimulation {
         log::info!("### Device limits:\n{:?}", vks.limits());
         log::info!("### Device features:\n{:?}", vks.features());
 
+        let (max_frames,) = vks.setup();
         vks.begin_resource_loading();
 
         let mut bindless_sys = BindlessResourceSystem::new(&vks);
@@ -149,13 +161,29 @@ impl FractalSimulation {
 
         vks.end_resource_loading();
 
-        let ubo_globals = UniqueBuffer::new::<UniformGlobals>(
-            &vks,
-            BufferUsageFlags::UNIFORM_BUFFER,
-            MemoryPropertyFlags::HOST_VISIBLE,
-            vks.swapchain.max_frames as usize,
-        );
-        bindless_sys.register_uniform_buffer(&vks.device_state, &ubo_globals);
+        let ubo_globals = VulkanBuffer::create(
+            &mut vks,
+            &VulkanBufferCreateInfo {
+                name_tag: None,
+                work_package: None,
+                usage: BufferUsageFlags::UNIFORM_BUFFER,
+                memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
+                item_size: std::mem::size_of::<UniformGlobals>(),
+                item_count: 1,
+                slabs: max_frames as usize,
+                initial_data: &[],
+            },
+        )
+        .expect("Failed to create ubo_globals");
+
+        // UniqueBuffer::new::<UniformGlobals>(
+        //     &vks,
+        //     BufferUsageFlags::UNIFORM_BUFFER,
+        //     MemoryPropertyFlags::HOST_VISIBLE,
+        //     vks.swapchain.max_frames as usize,
+        // );
+        //bindless_sys.register_uniform_buffer(&vks, &ubo_globals);
+        let ubo_globals_handle = bindless_sys.register_uniform_buffer_vkbuffer(&ubo_globals);
 
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
@@ -168,6 +196,7 @@ impl FractalSimulation {
             ui,
             ubo_globals,
             bindless_sys,
+            ubo_globals_handle,
         }
     }
 
@@ -179,30 +208,14 @@ impl FractalSimulation {
 
         let frame_context = self.vks.begin_rendering(img_size);
 
-        let ubo_data = UniformGlobals {
-            // mat: [1f32; 16],
-            frame_id: frame_context.current_frame_id,
-            // pad: [0u32; 3],
-        };
+        // let _ = self
+        //     .ubo_globals
+        //     .map_slab(&self.vks, frame_context.current_frame_id)
+        //     .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
 
-        UniqueBufferMapping::new(
-            &self.ubo_globals,
-            &self.vks.device_state,
-            Some(size_of::<UniformGlobals>() * frame_context.current_frame_id as usize),
-            Some(size_of::<UniformGlobals>()),
-        )
-        .write_data(std::slice::from_ref(&ubo_data));
-
-        unsafe {
-            self.vks.device_state.device.cmd_bind_descriptor_sets(
-                frame_context.cmd_buff,
-                PipelineBindPoint::GRAPHICS,
-                self.bindless_sys.pipeline_layout(),
-                0,
-                self.bindless_sys.descriptor_sets(),
-                &[],
-            );
-        }
+        self.bindless_sys.flush_pending_updates(&self.vks);
+        self.bindless_sys
+            .bind_descriptors(frame_context.cmd_buff, &self.vks);
 
         frame_context
     }

@@ -43,6 +43,7 @@ layout (set = 1, binding = 0) readonly buffer IndicesGlobal {
     uint data[];
 } g_IndexBufferGlobal[];
 
+layout (set = 2, binding = 0) uniform sampler1DArray g_Textures1DArrayGlobal[];
 layout (set = 2, binding = 0) uniform sampler2D g_Textures2DGlobal[];
 layout (set = 2, binding = 0) uniform sampler2DArray g_Textures2DArrayGlobal[];
 layout (set = 2, binding = 0) uniform samplerCube g_TexturesCubeGlobal[];
@@ -50,5 +51,12 @@ layout (set = 2, binding = 0) uniform samplerCube g_TexturesCubeGlobal[];
 layout (push_constant) uniform PushConstantsGlobal {
     uint data;
 } g_GlobalPushConst;
+
+//
+// [0..3] frame id (x)
+// [4..14] resource index (y)
+uvec2 unpack_global_pushconst() {
+    return uvec2(g_GlobalPushConst.data & 0xf, (g_GlobalPushConst.data >> 4) & 0x7f);
+}
 
 #endif /* !defined XR_VK_BINDLESS_CORE_GLSL_INCLUDED */
