@@ -369,8 +369,7 @@ impl UiBackend {
                 memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
                     | MemoryPropertyFlags::HOST_VISIBLE,
                 slabs: vks.swapchain.max_frames as usize,
-                item_size: std::mem::size_of::<UiBackendParams>(),
-                item_count: 1,
+                bytes: std::mem::size_of::<UiBackendParams>(),
                 initial_data: &[],
             },
         )

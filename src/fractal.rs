@@ -932,8 +932,7 @@ impl FractalGPUState {
                 memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
                     | MemoryPropertyFlags::HOST_VISIBLE,
                 slabs: vks.swapchain.max_frames as usize,
-                item_size: T::ssbo_size(),
-                item_count: 1,
+                bytes: T::ssbo_size(),
                 initial_data: &[],
             },
         )

@@ -1,5 +1,3 @@
-use std::mem::size_of;
-
 use ash::vk::{BufferUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint, Rect2D};
 
 use fractal::{Julia, Mandelbrot};
@@ -17,12 +15,22 @@ use winit::{
 
 mod fractal;
 mod shader;
+mod spin_mutex;
 mod ui;
 mod vulkan_renderer;
 
 use enum_iterator::{next_cycle, previous_cycle};
 
+async fn async_computation(vks: std::sync::Arc<std::pin::Pin<Box<VulkanRenderer>>>) {
+    let (_, _, z) = vks.reserve_staging_memory(1024);
+    println!("{:?} Reserved memory @ offset {z}", std::thread::current());
+    std::thread::sleep(std::time::Duration::from_secs(5));
+}
+
 fn main() {
+    use tokio::runtime;
+    let rt = runtime::Runtime::new().expect("Can't init tokio!");
+
     let _logger = flexi_logger::Logger::with(
         flexi_logger::LogSpecification::builder()
             .default(flexi_logger::LevelFilter::Debug)
@@ -63,11 +71,35 @@ fn main() {
         ))
         .expect("Failed to center cursor ...");
 
-    let mut fractal_sim = FractalSimulation::new(&window);
+    use std::sync::Arc;
 
-    event_loop.run(move |event, _, control_flow| {
-        fractal_sim.handle_event(&window, event, control_flow);
+    let vks = Arc::new(Box::pin(
+        VulkanRenderer::new(get_window_data(&window), window.inner_size().into())
+            .expect("Failed to initialize vulkan ..."),
+    ));
+
+    let mtx = Arc::new(spin_mutex::SpinMutex::new());
+    let mymtx = Arc::clone(&mtx);
+
+    let vks2 = Arc::clone(&vks);
+    let task = rt.spawn(async move {
+        let (x, y, z) = vks2.reserve_staging_memory(1024);
+        let _ = mtx.lock();
+        println!("Spwning and waiting for pepega task, reserved mem @ {z}");
+        let task2 = async_computation(vks2).await;
+        println!("Original task done.");
     });
+    {
+        let _ = mymtx.lock();
+    }
+
+    rt.block_on(task).unwrap();
+
+    // let mut fractal_sim = FractalSimulation::new(&window);
+
+    // event_loop.run(move |event, _, control_flow| {
+    //     fractal_sim.handle_event(&window, event, control_flow);
+    // });
 }
 
 pub struct InputState<'a> {
@@ -151,15 +183,12 @@ impl FractalSimulation {
         log::info!("### Device features:\n{:?}", vks.features());
 
         let (max_frames,) = vks.setup();
-        vks.begin_resource_loading();
 
         let mut bindless_sys = BindlessResourceSystem::new(&vks);
 
         let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default);
         let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys);
         let julia = Julia::new(&mut vks, &mut bindless_sys);
-
-        vks.end_resource_loading();
 
         let ubo_globals = VulkanBuffer::create(
             &mut vks,
@@ -168,8 +197,7 @@ impl FractalSimulation {
                 work_package: None,
                 usage: BufferUsageFlags::UNIFORM_BUFFER,
                 memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
-                item_size: std::mem::size_of::<UniformGlobals>(),
-                item_count: 1,
+                bytes: std::mem::size_of::<UniformGlobals>(),
                 slabs: max_frames as usize,
                 initial_data: &[],
             },
@@ -206,6 +234,8 @@ impl FractalSimulation {
             height: window.inner_size().height,
         };
 
+        self.vks
+            .debug_queue_begin_label("### render start ###", [0f32, 1f32, 0f32, 1f32]);
         let frame_context = self.vks.begin_rendering(img_size);
 
         // let _ = self
@@ -371,6 +401,7 @@ impl FractalSimulation {
                 self.ui.draw_frame(&self.vks, &frame_context);
 
                 self.vks.end_rendering(frame_context);
+                self.vks.debug_queue_end_label();
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
 
