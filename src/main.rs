@@ -3,8 +3,8 @@ use ash::vk::{BufferUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
 use vulkan_renderer::{
-    BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, UniqueBuffer,
-    UniqueBufferMapping, VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
+    BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, UniqueBufferMapping,
+    VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
 };
 use winit::{
     dpi::PhysicalPosition,
@@ -28,8 +28,8 @@ async fn async_computation(vks: std::sync::Arc<std::pin::Pin<Box<VulkanRenderer>
 }
 
 fn main() {
-    use tokio::runtime;
-    let rt = runtime::Runtime::new().expect("Can't init tokio!");
+    // use tokio::runtime;
+    // let rt = runtime::Runtime::new().expect("Can't init tokio!");
 
     let _logger = flexi_logger::Logger::with(
         flexi_logger::LogSpecification::builder()
@@ -71,35 +71,35 @@ fn main() {
         ))
         .expect("Failed to center cursor ...");
 
-    use std::sync::Arc;
-
-    let vks = Arc::new(Box::pin(
-        VulkanRenderer::new(get_window_data(&window), window.inner_size().into())
-            .expect("Failed to initialize vulkan ..."),
-    ));
-
-    let mtx = Arc::new(spin_mutex::SpinMutex::new());
-    let mymtx = Arc::clone(&mtx);
-
-    let vks2 = Arc::clone(&vks);
-    let task = rt.spawn(async move {
-        let (x, y, z) = vks2.reserve_staging_memory(1024);
-        let _ = mtx.lock();
-        println!("Spwning and waiting for pepega task, reserved mem @ {z}");
-        let task2 = async_computation(vks2).await;
-        println!("Original task done.");
-    });
-    {
-        let _ = mymtx.lock();
-    }
-
-    rt.block_on(task).unwrap();
-
-    // let mut fractal_sim = FractalSimulation::new(&window);
-
-    // event_loop.run(move |event, _, control_flow| {
-    //     fractal_sim.handle_event(&window, event, control_flow);
+    // use std::sync::Arc;
+    //
+    // let vks = Arc::new(Box::pin(
+    //     VulkanRenderer::new(get_window_data(&window), window.inner_size().into())
+    //         .expect("Failed to initialize vulkan ..."),
+    // ));
+    //
+    // let mtx = Arc::new(spin_mutex::SpinMutex::new());
+    // let mymtx = Arc::clone(&mtx);
+    //
+    // let vks2 = Arc::clone(&vks);
+    // let task = rt.spawn(async move {
+    //     let (x, y, z) = vks2.reserve_staging_memory(1024);
+    //     let _ = mtx.lock();
+    //     println!("Spwning and waiting for pepega task, reserved mem @ {z}");
+    //     let task2 = async_computation(vks2).await;
+    //     println!("Original task done.");
     // });
+    // {
+    //     let _ = mymtx.lock();
+    // }
+    //
+    // rt.block_on(task).unwrap();
+    //
+    let mut fractal_sim = FractalSimulation::new(&window);
+
+    event_loop.run(move |event, _, control_flow| {
+        fractal_sim.handle_event(&window, event, control_flow);
+    });
 }
 
 pub struct InputState<'a> {

@@ -1,7 +1,6 @@
 use std::{
     ffi::{c_char, c_void, CString},
     mem::size_of,
-    os::raw::c_uchar,
 };
 
 use ash::{
@@ -413,7 +412,9 @@ impl VulkanBuffer {
             }
         }
 
-        // TODO: debug name tagging
+        create_info
+            .name_tag
+            .map(|name_tag| renderer.debug_set_object_name(buffer, name_tag));
 
         let buffer_memory = unsafe {
             let mut memory_requirements = *MemoryRequirements2::builder();
@@ -515,8 +516,10 @@ impl VulkanBuffer {
             }
         }
 
+        let buffer_name = create_info.name_tag.unwrap_or_else(|| "anonymous");
+
         log::info!(
-            "New buffer @ {buffer:p} <=> {buffer_memory:p}, alignment {alignment}, 
+            "New buffer [[{buffer_name}]] @ {buffer:p} <=> {buffer_memory:p}, alignment {alignment}, 
             aligned slab size {aligned_slab_size}, aligned allocation size {aligned_allocation_size}"
         );
 
@@ -544,148 +547,146 @@ impl VulkanBuffer {
     }
 }
 
-pub struct UniqueBuffer {
-    device: *const Device,
-    pub handle: Buffer,
-    pub memory: DeviceMemory,
-    pub aligned_item_size: usize,
-}
-
-impl std::ops::Drop for UniqueBuffer {
-    fn drop(&mut self) {
-        log::debug!(
-            "Dropping buffer and memory {:?} -> {:?}",
-            self.handle,
-            self.memory
-        );
-        unsafe {
-            (*self.device).destroy_buffer(self.handle, None);
-            (*self.device).free_memory(self.memory, None);
-        }
-    }
-}
-
-impl UniqueBuffer {
-    pub fn with_capacity(
-        ds: &VulkanRenderer,
-        usage: BufferUsageFlags,
-        memory_flags: MemoryPropertyFlags,
-        items: usize,
-        item_size: usize,
-    ) -> Self {
-        let align_size = if memory_flags.intersects(
-            MemoryPropertyFlags::HOST_VISIBLE
-                | MemoryPropertyFlags::HOST_COHERENT
-                | MemoryPropertyFlags::HOST_CACHED,
-        ) {
-            ds.device_state
-                .physical
-                .properties
-                .base
-                .properties
-                .limits
-                .non_coherent_atom_size
-        } else {
-            if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
-                ds.device_state
-                    .physical
-                    .properties
-                    .base
-                    .properties
-                    .limits
-                    .min_uniform_buffer_offset_alignment
-            } else if usage.intersects(
-                BufferUsageFlags::UNIFORM_TEXEL_BUFFER | BufferUsageFlags::STORAGE_TEXEL_BUFFER,
-            ) {
-                ds.device_state
-                    .physical
-                    .properties
-                    .base
-                    .properties
-                    .limits
-                    .min_texel_buffer_offset_alignment
-            } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
-                ds.device_state
-                    .physical
-                    .properties
-                    .base
-                    .properties
-                    .limits
-                    .min_storage_buffer_offset_alignment
-            } else {
-                ds.device_state
-                    .physical
-                    .properties
-                    .base
-                    .properties
-                    .limits
-                    .non_coherent_atom_size
-            }
-        } as usize;
-
-        let aligned_item_size = round_up(item_size, align_size);
-        let size = aligned_item_size * items;
-
-        let buffer = unsafe {
-            ds.device_state.device.create_buffer(
-                &BufferCreateInfo::builder()
-                    .size(size as DeviceSize)
-                    .usage(usage)
-                    .sharing_mode(SharingMode::EXCLUSIVE)
-                    .queue_family_indices(&[]),
-                None,
-            )
-        }
-        .expect("Failed to create buffer");
-
-        let memory_req = unsafe {
-            ds.device_state
-                .device
-                .get_buffer_memory_requirements(buffer)
-        };
-        let mem_heap = choose_memory_heap(&memory_req, memory_flags, ds.memory_properties());
-
-        let buffer_memory = unsafe {
-            ds.device_state.device.allocate_memory(
-                &MemoryAllocateInfo::builder()
-                    .allocation_size(memory_req.size)
-                    .memory_type_index(mem_heap),
-                None,
-            )
-        }
-        .expect("Failed to allocate memory for buffer ...");
-
-        unsafe {
-            ds.device_state
-                .device
-                .bind_buffer_memory(buffer, buffer_memory, 0)
-                .expect("Failed to bind memory for buffer");
-        }
-
-        log::debug!(
-            "Create buffer and memory object {:?} -> {:?} -> {}",
-            buffer,
-            buffer_memory,
-            memory_req.size
-        );
-
-        Self {
-            device: &ds.device_state.device as *const _,
-            handle: buffer,
-            memory: buffer_memory,
-            aligned_item_size,
-        }
-    }
-
-    pub fn new<T: Sized>(
-        ds: &VulkanRenderer,
-        usage: BufferUsageFlags,
-        memory_flags: MemoryPropertyFlags,
-        items: usize,
-    ) -> Self {
-        Self::with_capacity(ds, usage, memory_flags, items, std::mem::size_of::<T>())
-    }
-}
+// pub struct UniqueBuffer {
+//     device: *const Device,
+//     pub handle: Buffer,
+//     pub memory: DeviceMemory,
+//     pub aligned_item_size: usize,
+// }
+//
+// impl std::ops::Drop for UniqueBuffer {
+//     fn drop(&mut self) {
+//         log::debug!(
+//             "Dropping buffer and memory {:?} -> {:?}",
+//             self.handle,
+//             self.memory
+//         );
+//         unsafe {
+//             (*self.device).destroy_buffer(self.handle, None);
+//             (*self.device).free_memory(self.memory, None);
+//         }
+//     }
+// }
+//
+// impl UniqueBuffer {
+//     // pub fn with_capacity(
+//     //     ds: &VulkanRenderer,
+//     //     usage: BufferUsageFlags,
+//     //     memory_flags: MemoryPropertyFlags,
+//     //     items: usize,
+//     //     item_size: usize,
+//     // ) -> Self {
+//     //     let align_size = if memory_flags.intersects(
+//     //         MemoryPropertyFlags::HOST_VISIBLE
+//     //             | MemoryPropertyFlags::HOST_COHERENT
+//     //             | MemoryPropertyFlags::HOST_CACHED,
+//     //     ) {
+//     //         ds.device_state
+//     //             .physical
+//     //             .properties
+//     //             .base
+//     //             .properties
+//     //             .limits
+//     //             .non_coherent_atom_size
+//     //     } else {
+//     //         if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
+//     //             ds.device_state
+//     //                 .physical
+//     //                 .properties
+//     //                 .base
+//     //                 .properties
+//     //                 .limits
+//     //                 .min_uniform_buffer_offset_alignment
+//     //         } else if usage.intersects(
+//     //             BufferUsageFlags::UNIFORM_TEXEL_BUFFER | BufferUsageFlags::STORAGE_TEXEL_BUFFER,
+//     //         ) {
+//     //             ds.device_state
+//     //                 .physical
+//     //                 .properties
+//     //                 .base
+//     //                 .properties
+//     //                 .limits
+//     //                 .min_texel_buffer_offset_alignment
+//     //         } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
+//     //             ds.device_state
+//     //                 .physical
+//     //                 .properties
+//     //                 .base
+//     //                 .properties
+//     //                 .limits
+//     //                 .min_storage_buffer_offset_alignment
+//     //         } else {
+//     //             ds.device_state
+//     //                 .physical
+//     //                 .properties
+//     //                 .base
+//     //                 .properties
+//     //                 .limits
+//     //                 .non_coherent_atom_size
+//     //         }
+//     //     } as usize;
+//     //
+//     //     let aligned_item_size = round_up(item_size, align_size);
+//     //     let size = aligned_item_size * items;
+//     //
+//     //     let buffer = unsafe {
+//     //         ds.device_state.device.create_buffer(
+//     //             &BufferCreateInfo::builder()
+//     //                 .size(size as DeviceSize)
+//     //                 .usage(usage)
+//     //                 .sharing_mode(SharingMode::EXCLUSIVE)
+//     //                 .queue_family_indices(&[]),
+//     //             None,
+//     //         )
+//     //     }?;
+//     //
+//     //     let memory_req = unsafe {
+//     //         ds.device_state
+//     //             .device
+//     //             .get_buffer_memory_requirements(buffer)
+//     //     };
+//     //     let mem_heap = choose_memory_heap(&memory_req, memory_flags, ds.memory_properties());
+//     //
+//     //     let buffer_memory = unsafe {
+//     //         ds.device_state.device.allocate_memory(
+//     //             &MemoryAllocateInfo::builder()
+//     //                 .allocation_size(memory_req.size)
+//     //                 .memory_type_index(mem_heap),
+//     //             None,
+//     //         )
+//     //     }?;
+//     //
+//     //     unsafe {
+//     //         ds.device_state
+//     //             .device
+//     //             .bind_buffer_memory(buffer, buffer_memory, 0)
+//     //             .expect("Failed to bind memory for buffer");
+//     //     }
+//     //
+//     //     log::debug!(
+//     //         "Create buffer and memory object {:?} -> {:?} -> {}",
+//     //         buffer,
+//     //         buffer_memory,
+//     //         memory_req.size
+//     //     );
+//     //
+//     //     Self {
+//     //         device: &ds.device_state.device as *const _,
+//     //         handle: buffer,
+//     //         memory: buffer_memory,
+//     //         aligned_item_size,
+//     //     }
+//     // }
+//     //
+//     // pub fn new<T: Sized>(
+//     //     ds: &VulkanRenderer,
+//     //     usage: BufferUsageFlags,
+//     //     memory_flags: MemoryPropertyFlags,
+//     //     items: usize,
+//     // ) -> Self {
+//     //     Self::with_capacity(ds, usage, memory_flags, items, std::mem::size_of::<T>())
+//     // }
+// }
 
 fn round_up(num_to_round: usize, multiple: usize) -> usize {
     assert_ne!(multiple, 0);

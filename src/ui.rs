@@ -31,7 +31,7 @@ use crate::vulkan_renderer::{
 };
 use crate::{
     vulkan_renderer::{UniqueImage, UniqueImageView, UniqueSampler},
-    FrameRenderContext, UniqueBuffer, UniqueBufferMapping, VulkanRenderer,
+    FrameRenderContext, UniqueBufferMapping, VulkanRenderer,
 };
 
 type UiVertex = imgui::DrawVert;
@@ -249,8 +249,8 @@ struct UiBackendParams {
 }
 
 struct UiRenderState {
-    vertex_buffer: UniqueBuffer,
-    index_buffer: UniqueBuffer,
+    vertex_buffer: VulkanBuffer,
+    index_buffer: VulkanBuffer,
     ubo_vs: VulkanBuffer,
     ubo_handle: BindlessResourceHandle,
     font_atlas_img: UniqueImage,
@@ -346,7 +346,14 @@ impl UiBackend {
         imgui.io_mut().display_size = [logical_size.width as f32, logical_size.height as f32];
         imgui.io_mut().mouse_pos = [0f32; 2];
 
-        let vertex_buffer = UniqueBuffer::new::<UiVertex>(
+        let vertex_buffer = VulkanBuffer::create(
+            vks,
+            &VulkanBufferCreateInfo {
+                name_tag: Some("[[UI]] vertex buffer"),
+            },
+        );
+
+        UniqueBuffer::new::<UiVertex>(
             vks,
             BufferUsageFlags::VERTEX_BUFFER,
             MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
