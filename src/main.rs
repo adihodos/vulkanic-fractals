@@ -3,8 +3,8 @@ use ash::vk::{BufferUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint
 use fractal::{Julia, Mandelbrot};
 use ui::UiBackend;
 use vulkan_renderer::{
-    BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, UniqueBufferMapping,
-    VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
+    BindlessResourceSystem, BindlessUniformBufferResourceHandleEntryPair, FrameRenderContext,
+    UniqueBufferMapping, VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
 };
 use winit::{
     dpi::PhysicalPosition,
@@ -17,6 +17,7 @@ mod fractal;
 mod shader;
 mod spin_mutex;
 mod ui;
+mod vulkan_image;
 mod vulkan_renderer;
 
 use enum_iterator::{next_cycle, previous_cycle};
@@ -125,8 +126,7 @@ struct FractalSimulation {
     cursor_pos: (f32, f32),
     vks: std::pin::Pin<Box<VulkanRenderer>>,
     bindless_sys: BindlessResourceSystem,
-    ubo_globals: VulkanBuffer,
-    ubo_globals_handle: BindlessResourceHandle,
+    ubo_globals_handle: BindlessUniformBufferResourceHandleEntryPair,
 }
 
 #[cfg(target_os = "windows")]
@@ -184,9 +184,11 @@ impl FractalSimulation {
 
         let (max_frames,) = vks.setup();
 
-        let mut bindless_sys = BindlessResourceSystem::new(&vks);
+        let mut bindless_sys = BindlessResourceSystem::new(&vks).expect("Cant create bindless sys");
 
-        let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default);
+        let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default)
+            .expect("Failed to create UI backend");
+
         let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys);
         let julia = Julia::new(&mut vks, &mut bindless_sys);
 
@@ -204,14 +206,7 @@ impl FractalSimulation {
         )
         .expect("Failed to create ubo_globals");
 
-        // UniqueBuffer::new::<UniformGlobals>(
-        //     &vks,
-        //     BufferUsageFlags::UNIFORM_BUFFER,
-        //     MemoryPropertyFlags::HOST_VISIBLE,
-        //     vks.swapchain.max_frames as usize,
-        // );
-        //bindless_sys.register_uniform_buffer(&vks, &ubo_globals);
-        let ubo_globals_handle = bindless_sys.register_uniform_buffer_vkbuffer(&ubo_globals);
+        let ubo_globals_handle = bindless_sys.register_uniform_buffer(ubo_globals, None);
 
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
@@ -222,7 +217,6 @@ impl FractalSimulation {
             cursor_pos,
             vks,
             ui,
-            ubo_globals,
             bindless_sys,
             ubo_globals_handle,
         }
@@ -238,10 +232,13 @@ impl FractalSimulation {
             .debug_queue_begin_label("### render start ###", [0f32, 1f32, 0f32, 1f32]);
         let frame_context = self.vks.begin_rendering(img_size);
 
-        // let _ = self
-        //     .ubo_globals
-        //     .map_slab(&self.vks, frame_context.current_frame_id)
-        //     .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
+        // UniqueBufferMapping::map_memory(
+        //     self.vks.logical(),
+        //     self.ubo_globals_handle.1.devmem,
+        //     self.ubo_globals_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
+        //     self.ubo_globals_handle.1.aligned_slab_size,
+        // )
+        // .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
 
         self.bindless_sys.flush_pending_updates(&self.vks);
         self.bindless_sys

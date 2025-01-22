@@ -1,19 +1,18 @@
 use std::{cmp::Ordering, ffi::CStr, mem::size_of};
 
 use ash::vk::{
-    BlendFactor, BlendOp, BorderColor, BufferUsageFlags, ColorComponentFlags, ComponentMapping,
-    ComponentSwizzle, CullModeFlags, DeviceSize, DynamicState, Extent2D, Extent3D, Filter,
-    FrontFace, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange,
-    ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo, ImageViewType,
+    BlendFactor, BlendOp, BorderColor, BufferUsageFlags, ColorComponentFlags, CullModeFlags,
+    DeviceSize, DynamicState, Extent2D, Filter, FrontFace, ImageType, ImageUsageFlags,
     MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineColorBlendAttachmentState,
     PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo, PipelineLayout,
-    PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SampleCountFlags,
-    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
-    VertexInputAttributeDescription, VertexInputRate, Viewport,
+    PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SamplerAddressMode,
+    SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, VertexInputAttributeDescription,
+    VertexInputRate, Viewport,
 };
-use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, Io, Key};
+use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, FontId, Io, Key};
 use imgui::{DrawCmd, FontSource};
 
+use smallvec::SmallVec;
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::{
@@ -24,14 +23,15 @@ use winit::{
 };
 
 use crate::shader::ShaderSource;
+use crate::vulkan_image::{UniqueImage, VulkanImageCreateInfo};
 use crate::vulkan_renderer::{
-    BindlessResourceHandle, BindlessResourceSystem, GlobalPushConstant,
-    GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, InputAssemblyState, UniquePipeline,
-    VulkanBuffer, VulkanBufferCreateInfo,
+    BindlessImageResourceHandleEntryPair, BindlessResourceSystem,
+    BindlessStorageBufferResourceHandleEntryPair, BindlessUniformBufferResourceHandleEntryPair,
+    GlobalPushConstant, GraphicsError, GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper,
+    InputAssemblyState, QueueType, UniquePipeline, VulkanBuffer, VulkanBufferCreateInfo,
 };
 use crate::{
-    vulkan_renderer::{UniqueImage, UniqueImageView, UniqueSampler},
-    FrameRenderContext, UniqueBufferMapping, VulkanRenderer,
+    vulkan_renderer::UniqueSampler, FrameRenderContext, UniqueBufferMapping, VulkanRenderer,
 };
 
 type UiVertex = imgui::DrawVert;
@@ -251,11 +251,8 @@ struct UiBackendParams {
 struct UiRenderState {
     vertex_buffer: VulkanBuffer,
     index_buffer: VulkanBuffer,
-    ubo_vs: VulkanBuffer,
-    ubo_handle: BindlessResourceHandle,
-    font_atlas_img: UniqueImage,
-    font_atlas_img_view: UniqueImageView,
-    atlas_handle: BindlessResourceHandle,
+    ubo_handle: BindlessStorageBufferResourceHandleEntryPair,
+    atlas_handle: BindlessImageResourceHandleEntryPair,
     sampler: UniqueSampler,
     pipeline: UniquePipeline,
     bindless_layout: PipelineLayout,
@@ -264,6 +261,7 @@ struct UiRenderState {
 pub struct UiBackend {
     platform: WinitPlatform,
     rs: UiRenderState,
+    fontids: Vec<(FontId, String)>,
     imgui: imgui::Context,
 }
 
@@ -329,7 +327,7 @@ impl UiBackend {
         vks: &mut VulkanRenderer,
         bindless_sys: &mut BindlessResourceSystem,
         hidpi_mode: HiDpiMode,
-    ) -> UiBackend {
+    ) -> Result<UiBackend, GraphicsError> {
         let mut imgui = init_imgui();
 
         let (hidpi_mode, hidpi_factor) = hidpi_mode.apply(window.scale_factor());
@@ -350,110 +348,99 @@ impl UiBackend {
             vks,
             &VulkanBufferCreateInfo {
                 name_tag: Some("[[UI]] vertex buffer"),
+                work_package: None,
+                usage: BufferUsageFlags::VERTEX_BUFFER,
+                memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
+                slabs: vks.swapchain.max_frames as usize,
+                bytes: Self::MAX_VERTICES as usize * size_of::<UiVertex>(),
+                initial_data: &[],
             },
-        );
+        )?;
 
-        UniqueBuffer::new::<UiVertex>(
+        let index_buffer = VulkanBuffer::create(
             vks,
-            BufferUsageFlags::VERTEX_BUFFER,
-            MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-            (Self::MAX_VERTICES * vks.swapchain.max_frames) as usize,
-        );
-
-        let index_buffer = UniqueBuffer::new::<UiIndex>(
-            vks,
-            BufferUsageFlags::INDEX_BUFFER,
-            MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-            (Self::MAX_INDICES * vks.swapchain.max_frames) as usize,
-        );
+            &VulkanBufferCreateInfo {
+                name_tag: Some("[[UI]] index buffer"),
+                work_package: None,
+                usage: BufferUsageFlags::INDEX_BUFFER,
+                memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
+                slabs: vks.swapchain.max_frames as usize,
+                bytes: Self::MAX_INDICES as usize * size_of::<UiIndex>(),
+                initial_data: &[],
+            },
+        )?;
 
         let ubo_vs = VulkanBuffer::create(
             vks,
             &VulkanBufferCreateInfo {
-                name_tag: Some("UI Backend UBO"),
+                name_tag: Some("[[UI]] Backend UBO"),
                 work_package: None,
                 usage: BufferUsageFlags::STORAGE_BUFFER,
-                memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
-                    | MemoryPropertyFlags::HOST_VISIBLE,
+                memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
                 slabs: vks.swapchain.max_frames as usize,
                 bytes: std::mem::size_of::<UiBackendParams>(),
                 initial_data: &[],
             },
-        )
-        .expect("Failed to create fractal UBO");
+        )?;
 
-        let ubo_handle = bindless_sys.register_storage_buffer(&ubo_vs);
+        let ubo_handle = bindless_sys.register_storage_buffer(ubo_vs, None);
         log::info!("ui ubo {ubo_handle:?}");
 
-        let font_files = [
-            "data/fonts/iosevka-ss03-regular.ttf",
-            "data/fonts/iosevka-ss03-medium.ttf",
-            "data/fonts/RobotoMono-Medium.ttf",
-            "data/fonts/RobotoMono-Regular.ttf",
-        ];
-
-        if let Ok(mut font_file) = std::fs::File::open(font_files[0]) {
-            let mut ttf_bytes = Vec::<u8>::new();
-            use std::io::Read;
-
-            if let Ok(_) = font_file.read_to_end(&mut ttf_bytes) {
-                imgui.fonts().add_font(&[FontSource::TtfData {
-                    data: &ttf_bytes,
-                    size_pixels: 18f32,
-                    config: Some(FontConfig {
-                        oversample_h: 4,
-                        oversample_v: 4,
-                        rasterizer_multiply: 1.5f32,
-                        ..FontConfig::default()
-                    }),
-                }]);
-            }
-        }
+        let fontids = [
+            ("data/fonts/iosevka-ss03-regular.ttf", "IosevkaRegular"),
+            ("data/fonts/iosevka-ss03-medium.ttf", "IosevkaMedium"),
+            ("data/fonts/RobotoMono-Medium.ttf", "RobotoMonoMedium"),
+            ("data/fonts/RobotoMono-Regular.ttf", "RobotoMonoRegular"),
+        ]
+        .iter()
+        .filter_map(|(font_file, font_name)| {
+            std::fs::File::open(font_file)
+                .and_then(|mut ff| {
+                    let mut ttf_bytes = Vec::<u8>::new();
+                    use std::io::Read;
+                    ff.read_to_end(&mut ttf_bytes)
+                        .map(|_| (ttf_bytes, font_name))
+                })
+                .and_then(|(font_bytes, font_name)| {
+                    Ok((
+                        imgui.fonts().add_font(&[FontSource::TtfData {
+                            data: &font_bytes,
+                            size_pixels: 18f32,
+                            config: Some(FontConfig {
+                                oversample_h: 4,
+                                oversample_v: 4,
+                                rasterizer_multiply: 1.5f32,
+                                ..FontConfig::default()
+                            }),
+                        }]),
+                        font_name.to_string(),
+                    ))
+                })
+                .ok()
+        })
+        .collect::<Vec<(FontId, String)>>();
 
         let baked_font_atlas_image = imgui.fonts().build_alpha8_texture();
+        let qjob = vks.create_queue_job(QueueType::Transfer)?;
         let font_atlas_img = UniqueImage::from_bytes(
             vks,
-            *ImageCreateInfo::builder()
-                .flags(ImageCreateFlags::empty())
-                .image_type(ImageType::TYPE_2D)
-                .format(ash::vk::Format::R8_UNORM)
-                .extent(Extent3D {
-                    width: baked_font_atlas_image.width,
-                    height: baked_font_atlas_image.height,
-                    depth: 1,
-                })
-                .mip_levels(1)
-                .array_layers(1)
-                .samples(SampleCountFlags::TYPE_1)
-                .tiling(ImageTiling::OPTIMAL)
-                .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
-                .sharing_mode(SharingMode::EXCLUSIVE),
-            baked_font_atlas_image.data,
-        );
+            &VulkanImageCreateInfo {
+                tag_name: Some("UI font atlas"),
+                work_pkg: &qjob,
+                ty: ImageType::TYPE_2D,
+                usage: ImageUsageFlags::SAMPLED,
+                memory: MemoryPropertyFlags::DEVICE_LOCAL,
+                format: ash::vk::Format::R8_UNORM,
+                cubemap: false,
+                width: baked_font_atlas_image.width,
+                height: baked_font_atlas_image.height,
+                depth: 1,
+                layers: 1,
+                pixels: &[baked_font_atlas_image.data],
+            },
+        )?;
 
-        let font_atlas_img_view = UniqueImageView::new(
-            vks,
-            &font_atlas_img,
-            *ImageViewCreateInfo::builder()
-                .format(ash::vk::Format::R8_UNORM)
-                .image(font_atlas_img.image)
-                .subresource_range(
-                    *ImageSubresourceRange::builder()
-                        .aspect_mask(ImageAspectFlags::COLOR)
-                        .base_array_layer(0)
-                        .base_mip_level(0)
-                        .layer_count(1)
-                        .level_count(1),
-                )
-                .view_type(ImageViewType::TYPE_2D)
-                .components(
-                    *ComponentMapping::builder()
-                        .a(ComponentSwizzle::IDENTITY)
-                        .r(ComponentSwizzle::IDENTITY)
-                        .g(ComponentSwizzle::IDENTITY)
-                        .b(ComponentSwizzle::IDENTITY),
-                ),
-        );
+        let wait_token = vks.submit_queue_job(qjob)?;
 
         let sampler = UniqueSampler::new(
             vks,
@@ -467,8 +454,8 @@ impl UiBackend {
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
         );
 
-        let atlas_handle =
-            bindless_sys.register_image(&vks.device_state, &font_atlas_img_view, &sampler);
+        let atlas_handle = bindless_sys.register_image(font_atlas_img, &sampler, None);
+        vks.queue_ownership_transfer(&atlas_handle);
 
         let pipeline = GraphicsPipelineSetupHelper::new()
             .set_input_assembly_state(InputAssemblyState {
@@ -531,30 +518,28 @@ impl UiBackend {
                 GraphicsPipelineCreateOptions {
                     layout: Some(bindless_sys.pipeline_layout()),
                 },
-            )
-            .expect("Oyyy blyat, failed to create pipeline");
+            )?;
 
+        vks.consume_wait_token(wait_token);
         // TODO: fix this
         // imgui.fonts().tex_id = imgui::TextureId::new(descriptor_sets[0].as_raw() as usize);
 
-        UiBackend {
+        Ok(UiBackend {
             imgui,
 
             rs: UiRenderState {
                 vertex_buffer,
                 index_buffer,
-                ubo_vs,
                 ubo_handle,
-                font_atlas_img,
-                font_atlas_img_view,
                 atlas_handle,
                 sampler,
                 pipeline,
                 bindless_layout: bindless_sys.pipeline_layout(),
             },
 
+            fontids,
             platform,
-        }
+        })
     }
 
     fn handle_key_modifier(io: &mut Io, key: VirtualKeyCode, down: bool) {
@@ -779,16 +764,24 @@ impl UiBackend {
             let mut vertex_buffer_mapping = UniqueBufferMapping::new(
                 &self.rs.vertex_buffer,
                 &vks.device_state,
-                Some(buf_size_one_frame * frame_context.current_frame_id as usize),
-                Some(buf_size_one_frame),
-            );
+                Some(
+                    self.rs.vertex_buffer.aligned_slab_size
+                        * frame_context.current_frame_id as usize,
+                ),
+                Some(self.rs.vertex_buffer.aligned_slab_size),
+            )
+            .unwrap();
 
             let mut index_buffer_mapping = UniqueBufferMapping::new(
                 &self.rs.index_buffer,
                 &vks.device_state,
-                Some(index_buf_size_one_frame * frame_context.current_frame_id as usize),
-                Some(index_buf_size_one_frame),
-            );
+                Some(
+                    self.rs.index_buffer.aligned_slab_size
+                        * frame_context.current_frame_id as usize,
+                ),
+                Some(self.rs.index_buffer.aligned_slab_size),
+            )
+            .unwrap();
 
             let _ = draw_data.draw_lists().fold(
                 (0isize, 0isize),
@@ -817,14 +810,15 @@ impl UiBackend {
             graphics_device.cmd_bind_vertex_buffers(
                 frame_context.cmd_buff,
                 0,
-                &[self.rs.vertex_buffer.handle],
-                &[buf_size_one_frame as DeviceSize * frame_context.current_frame_id as DeviceSize],
+                &[self.rs.vertex_buffer.buffer],
+                &[self.rs.vertex_buffer.aligned_slab_size as DeviceSize
+                    * frame_context.current_frame_id as DeviceSize],
             );
 
             graphics_device.cmd_bind_index_buffer(
                 frame_context.cmd_buff,
-                self.rs.index_buffer.handle,
-                index_buf_size_one_frame as DeviceSize
+                self.rs.index_buffer.buffer,
+                self.rs.index_buffer.aligned_slab_size as DeviceSize
                     * frame_context.current_frame_id as DeviceSize,
                 ash::vk::IndexType::UINT16,
             );
@@ -851,7 +845,7 @@ impl UiBackend {
                 -1f32 - draw_data.display_pos[1] * scale[1],
             ];
 
-            let atlas_id = self.rs.atlas_handle.get_id();
+            let atlas_id = self.rs.atlas_handle.0.handle();
 
             let transform = UiBackendParams {
                 transform: [
@@ -879,11 +873,14 @@ impl UiBackend {
             //
             // push transform
 
-            self.rs
-                .ubo_vs
-                .map_slab(&vks, frame_context.current_frame_id)
-                .map(|ubo| ubo.write_data(std::slice::from_ref(&transform)))
-                .expect("Failed to update UI params");
+            UniqueBufferMapping::map_memory(
+                vks.logical(),
+                self.rs.ubo_handle.1.devmem,
+                self.rs.ubo_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
+                self.rs.ubo_handle.1.aligned_slab_size,
+            )
+            .map(|ubo| ubo.write_data(std::slice::from_ref(&transform)))
+            .expect("Failed to update UI params");
 
             vks.device_state.device.cmd_push_constants(
                 frame_context.cmd_buff,
@@ -891,7 +888,7 @@ impl UiBackend {
                 ShaderStageFlags::ALL,
                 0,
                 &GlobalPushConstant::from_resource(
-                    self.rs.ubo_handle,
+                    self.rs.ubo_handle.0,
                     frame_context.current_frame_id,
                 )
                 .to_gpu(),

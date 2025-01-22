@@ -1,6 +1,7 @@
 use std::{
     ffi::{c_char, c_void, CString},
     mem::size_of,
+    sync::atomic::AtomicU32,
 };
 
 use ash::{
@@ -11,9 +12,9 @@ use ash::{
         BufferCreateFlags, BufferCreateInfo, BufferImageCopy, BufferMemoryRequirementsInfo2,
         BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
         CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
-        CommandBufferResetFlags, CommandBufferUsageFlags, CommandPool, CommandPoolCreateFlags,
-        CommandPoolCreateInfo, CompareOp, ComponentMapping, ComponentSwizzle,
-        CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsLabelEXT,
+        CommandBufferResetFlags, CommandBufferSubmitInfo, CommandBufferUsageFlags, CommandPool,
+        CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
+        ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsLabelEXT,
         DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
         DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags, DependencyInfo,
         DescriptorBindingFlags, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool,
@@ -25,7 +26,7 @@ use ash::{
         GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
         ImageLayout, ImageMemoryBarrier, ImageMemoryBarrier2, ImageSubresourceLayers,
         ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryMapFlags,
+        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryBarrier2, MemoryMapFlags,
         MemoryPropertyFlags, MemoryRequirements, MemoryRequirements2, Offset2D, PhysicalDevice,
         PhysicalDeviceFeatures, PhysicalDeviceFeatures2, PhysicalDeviceMemoryProperties,
         PhysicalDeviceProperties2, PhysicalDeviceType, PhysicalDeviceVulkan11Features,
@@ -39,10 +40,10 @@ use ash::{
         PipelineStageFlags2, PipelineVertexInputStateCreateInfo, PolygonMode, PresentInfoKHR,
         PresentModeKHR, PushConstantRange, Queue, Rect2D, RenderPassBeginInfo,
         RenderPassCreateInfo, RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler,
-        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, ShaderModule, ShaderStageFlags,
-        SharingMode, SubmitInfo, SubpassContents, SubpassDescription, SurfaceFormatKHR, SurfaceKHR,
-        SwapchainCreateInfoKHR, SwapchainKHR, VertexInputAttributeDescription, VertexInputRate,
-        WriteDescriptorSet, WHOLE_SIZE,
+        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, SemaphoreSubmitInfo, ShaderModule,
+        ShaderStageFlags, SharingMode, SubmitInfo, SubmitInfo2, SubpassContents,
+        SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
+        VertexInputAttributeDescription, VertexInputRate, WriteDescriptorSet, WHOLE_SIZE,
     },
     Device, Entry, Instance,
 };
@@ -56,9 +57,10 @@ use smallvec::SmallVec;
 use crate::{
     shader::ShaderSource,
     spin_mutex::{self, SpinMutex},
+    vulkan_image::{UniqueImage, VulkanTextureInfo},
 };
 
-trait VkObjectType {
+pub trait VkObjectType {
     fn object_type() -> ash::vk::ObjectType;
 }
 
@@ -111,95 +113,6 @@ pub enum GraphicsError {
 pub enum VulkanSystemError {
     #[error("vulkan api error")]
     VulkanResult(#[from] ash::vk::Result),
-}
-
-pub struct UniqueImage {
-    device: *const Device,
-    pub image: Image,
-    pub memory: DeviceMemory,
-}
-
-impl UniqueImage {
-    pub fn from_bytes(
-        vks: &mut VulkanRenderer,
-        create_info: ImageCreateInfo,
-        pixels: &[u8],
-    ) -> UniqueImage {
-        let image = unsafe { vks.device_state.device.create_image(&create_info, None) }
-            .expect("Failed to create image");
-
-        let memory_req = unsafe { vks.device_state.device.get_image_memory_requirements(image) };
-
-        let image_memory = unsafe {
-            vks.device_state.device.allocate_memory(
-                &MemoryAllocateInfo::builder()
-                    .allocation_size(memory_req.size)
-                    .memory_type_index(choose_memory_heap(
-                        &memory_req,
-                        MemoryPropertyFlags::DEVICE_LOCAL,
-                        vks.memory_properties(),
-                    )),
-                None,
-            )
-        }
-        .expect("Failed to allocate memory");
-
-        unsafe {
-            vks.device_state
-                .device
-                .bind_image_memory(image, image_memory, 0)
-        }
-        .expect(&format!(
-            "Failed to bind memory @ {:?} for image {:?}",
-            image, image_memory
-        ));
-
-        let img = UniqueImage {
-            device: &vks.device_state.device as *const _,
-            image,
-            memory: image_memory,
-        };
-
-        todo!("Fix this");
-
-        img
-    }
-}
-
-impl std::ops::Drop for UniqueImage {
-    fn drop(&mut self) {
-        unsafe {
-            (*self.device).destroy_image(self.image, None);
-            (*self.device).free_memory(self.memory, None);
-        }
-    }
-}
-
-pub struct UniqueImageView {
-    device: *const Device,
-    pub view: ImageView,
-    pub image: Image,
-}
-
-impl UniqueImageView {
-    pub fn new(
-        vks: &VulkanRenderer,
-        img: &UniqueImage,
-        img_view_create_info: ImageViewCreateInfo,
-    ) -> UniqueImageView {
-        let view = unsafe {
-            vks.device_state
-                .device
-                .create_image_view(&img_view_create_info, None)
-        }
-        .expect("Failed to create image view");
-
-        UniqueImageView {
-            device: &vks.device_state.device as *const _,
-            view,
-            image: img.image,
-        }
-    }
 }
 
 pub struct UniqueSampler {
@@ -321,7 +234,7 @@ impl std::ops::Drop for UniqueShaderModule {
 
 pub struct VulkanBufferCreateInfo<'a> {
     pub name_tag: Option<&'a str>,
-    pub work_package: Option<ash::vk::CommandBuffer>,
+    pub work_package: Option<&'a QueuedJob>,
     pub usage: BufferUsageFlags,
     pub memory_properties: MemoryPropertyFlags,
     pub slabs: usize,
@@ -337,6 +250,15 @@ pub struct VulkanBuffer {
     pub aligned_slab_size: usize,
 }
 
+impl std::ops::Drop for VulkanBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.device).free_memory(self.memory, None);
+            (*self.device).destroy_buffer(self.buffer, None);
+        }
+    }
+}
+
 impl VulkanBuffer {
     pub fn size_bytes(&self) -> usize {
         self.aligned_slab_size * self.slabs
@@ -350,17 +272,14 @@ impl VulkanBuffer {
             | MemoryPropertyFlags::HOST_COHERENT
             | MemoryPropertyFlags::HOST_CACHED;
 
-        let alignment = if create_info.memory_properties.intersects(memory_host_access) {
-            renderer.limits().non_coherent_atom_size
-        } else {
-            //
-            // no host access, must have initial data
-            if create_info.initial_data.is_empty() {
-                Err(GraphicsError::Generic(
-                    "Buffer has no host access flags but is missing initial data".into(),
-                ))?;
-            }
+        let alignment_by_memory_access =
+            if create_info.memory_properties.intersects(memory_host_access) {
+                renderer.limits().non_coherent_atom_size
+            } else {
+                0
+            };
 
+        let alignment_by_usage = {
             if create_info
                 .usage
                 .intersects(BufferUsageFlags::UNIFORM_BUFFER)
@@ -376,6 +295,7 @@ impl VulkanBuffer {
             }
         };
 
+        let alignment = alignment_by_memory_access.max(alignment_by_usage);
         let aligned_slab_size = round_up(create_info.bytes, alignment as usize);
         let aligned_allocation_size = aligned_slab_size * create_info.slabs as usize;
         let initial_data_size = create_info
@@ -508,7 +428,7 @@ impl VulkanBuffer {
             // copy between staging buffer and destination buffer
             unsafe {
                 (*device).cmd_copy_buffer(
-                    create_info.work_package.unwrap(),
+                    create_info.work_package.unwrap().cmd_buffer,
                     staging_buffer,
                     buffer,
                     &copy_regions,
@@ -519,7 +439,7 @@ impl VulkanBuffer {
         let buffer_name = create_info.name_tag.unwrap_or_else(|| "anonymous");
 
         log::info!(
-            "New buffer [[{buffer_name}]] @ {buffer:p} <=> {buffer_memory:p}, alignment {alignment}, 
+            "New buffer {buffer_name} @ {buffer:p} <=> {buffer_memory:p}, alignment {alignment}, 
             aligned slab size {aligned_slab_size}, aligned allocation size {aligned_allocation_size}"
         );
 
@@ -547,147 +467,6 @@ impl VulkanBuffer {
     }
 }
 
-// pub struct UniqueBuffer {
-//     device: *const Device,
-//     pub handle: Buffer,
-//     pub memory: DeviceMemory,
-//     pub aligned_item_size: usize,
-// }
-//
-// impl std::ops::Drop for UniqueBuffer {
-//     fn drop(&mut self) {
-//         log::debug!(
-//             "Dropping buffer and memory {:?} -> {:?}",
-//             self.handle,
-//             self.memory
-//         );
-//         unsafe {
-//             (*self.device).destroy_buffer(self.handle, None);
-//             (*self.device).free_memory(self.memory, None);
-//         }
-//     }
-// }
-//
-// impl UniqueBuffer {
-//     // pub fn with_capacity(
-//     //     ds: &VulkanRenderer,
-//     //     usage: BufferUsageFlags,
-//     //     memory_flags: MemoryPropertyFlags,
-//     //     items: usize,
-//     //     item_size: usize,
-//     // ) -> Self {
-//     //     let align_size = if memory_flags.intersects(
-//     //         MemoryPropertyFlags::HOST_VISIBLE
-//     //             | MemoryPropertyFlags::HOST_COHERENT
-//     //             | MemoryPropertyFlags::HOST_CACHED,
-//     //     ) {
-//     //         ds.device_state
-//     //             .physical
-//     //             .properties
-//     //             .base
-//     //             .properties
-//     //             .limits
-//     //             .non_coherent_atom_size
-//     //     } else {
-//     //         if usage.intersects(BufferUsageFlags::UNIFORM_BUFFER) {
-//     //             ds.device_state
-//     //                 .physical
-//     //                 .properties
-//     //                 .base
-//     //                 .properties
-//     //                 .limits
-//     //                 .min_uniform_buffer_offset_alignment
-//     //         } else if usage.intersects(
-//     //             BufferUsageFlags::UNIFORM_TEXEL_BUFFER | BufferUsageFlags::STORAGE_TEXEL_BUFFER,
-//     //         ) {
-//     //             ds.device_state
-//     //                 .physical
-//     //                 .properties
-//     //                 .base
-//     //                 .properties
-//     //                 .limits
-//     //                 .min_texel_buffer_offset_alignment
-//     //         } else if usage.intersects(BufferUsageFlags::STORAGE_BUFFER) {
-//     //             ds.device_state
-//     //                 .physical
-//     //                 .properties
-//     //                 .base
-//     //                 .properties
-//     //                 .limits
-//     //                 .min_storage_buffer_offset_alignment
-//     //         } else {
-//     //             ds.device_state
-//     //                 .physical
-//     //                 .properties
-//     //                 .base
-//     //                 .properties
-//     //                 .limits
-//     //                 .non_coherent_atom_size
-//     //         }
-//     //     } as usize;
-//     //
-//     //     let aligned_item_size = round_up(item_size, align_size);
-//     //     let size = aligned_item_size * items;
-//     //
-//     //     let buffer = unsafe {
-//     //         ds.device_state.device.create_buffer(
-//     //             &BufferCreateInfo::builder()
-//     //                 .size(size as DeviceSize)
-//     //                 .usage(usage)
-//     //                 .sharing_mode(SharingMode::EXCLUSIVE)
-//     //                 .queue_family_indices(&[]),
-//     //             None,
-//     //         )
-//     //     }?;
-//     //
-//     //     let memory_req = unsafe {
-//     //         ds.device_state
-//     //             .device
-//     //             .get_buffer_memory_requirements(buffer)
-//     //     };
-//     //     let mem_heap = choose_memory_heap(&memory_req, memory_flags, ds.memory_properties());
-//     //
-//     //     let buffer_memory = unsafe {
-//     //         ds.device_state.device.allocate_memory(
-//     //             &MemoryAllocateInfo::builder()
-//     //                 .allocation_size(memory_req.size)
-//     //                 .memory_type_index(mem_heap),
-//     //             None,
-//     //         )
-//     //     }?;
-//     //
-//     //     unsafe {
-//     //         ds.device_state
-//     //             .device
-//     //             .bind_buffer_memory(buffer, buffer_memory, 0)
-//     //             .expect("Failed to bind memory for buffer");
-//     //     }
-//     //
-//     //     log::debug!(
-//     //         "Create buffer and memory object {:?} -> {:?} -> {}",
-//     //         buffer,
-//     //         buffer_memory,
-//     //         memory_req.size
-//     //     );
-//     //
-//     //     Self {
-//     //         device: &ds.device_state.device as *const _,
-//     //         handle: buffer,
-//     //         memory: buffer_memory,
-//     //         aligned_item_size,
-//     //     }
-//     // }
-//     //
-//     // pub fn new<T: Sized>(
-//     //     ds: &VulkanRenderer,
-//     //     usage: BufferUsageFlags,
-//     //     memory_flags: MemoryPropertyFlags,
-//     //     items: usize,
-//     // ) -> Self {
-//     //     Self::with_capacity(ds, usage, memory_flags, items, std::mem::size_of::<T>())
-//     // }
-// }
-
 fn round_up(num_to_round: usize, multiple: usize) -> usize {
     assert_ne!(multiple, 0);
     if num_to_round == 0 {
@@ -702,8 +481,7 @@ pub struct UniqueBufferMapping<'a> {
     mapped_memory: *mut c_void,
     device: &'a Device,
     offset: usize,
-    range_start: usize,
-    range_size: usize,
+    size: usize,
 }
 
 impl<'a> UniqueBufferMapping<'a> {
@@ -727,46 +505,22 @@ impl<'a> UniqueBufferMapping<'a> {
             mapped_memory,
             device,
             offset,
-            range_start: offset,
-            range_size: map_size,
+            size: map_size,
         })
     }
 
     pub fn new(
-        buf: &UniqueBuffer,
+        buf: &VulkanBuffer,
         ds: &'a VulkanDeviceState,
         offset: Option<usize>,
         size: Option<usize>,
-    ) -> Self {
-        let round_down = |x: usize, m: usize| (x / m) * m;
-
-        let offset = offset.unwrap_or_default();
-        let range_start = round_down(offset, buf.aligned_item_size);
-
-        assert!(offset >= range_start);
-
-        let range_size = size
-            .map(|s| round_up(s, buf.aligned_item_size))
-            .unwrap_or(ash::vk::WHOLE_SIZE as usize);
-
-        let mapped_memory = unsafe {
-            ds.device.map_memory(
-                buf.memory,
-                range_start as u64,
-                range_size as u64,
-                MemoryMapFlags::empty(),
-            )
-        }
-        .expect("Failed to map memory");
-
-        Self {
-            buffer_mem: buf.memory,
-            mapped_memory,
-            device: &ds.device,
-            offset: offset - range_start,
-            range_start,
-            range_size,
-        }
+    ) -> std::result::Result<Self, GraphicsError> {
+        Self::map_memory(
+            &ds.device,
+            buf.memory,
+            offset.unwrap_or(0),
+            size.unwrap_or(ash::vk::WHOLE_SIZE as usize),
+        )
     }
 
     pub fn write_data<T: Sized + Copy>(&self, data: &[T]) {
@@ -788,13 +542,12 @@ impl<'a> UniqueBufferMapping<'a> {
 impl<'a> std::ops::Drop for UniqueBufferMapping<'a> {
     fn drop(&mut self) {
         unsafe {
-            self.device
+            let _ = self
+                .device
                 .flush_mapped_memory_ranges(&[*MappedMemoryRange::builder()
                     .memory(self.buffer_mem)
-                    .offset(self.range_start as DeviceSize)
-                    .size(self.range_size as DeviceSize)])
-                .expect("Failed to flush mapped memory ...");
-
+                    .offset(self.offset as DeviceSize)
+                    .size(self.size as DeviceSize)]);
             self.device.unmap_memory(self.buffer_mem);
         }
     }
@@ -829,6 +582,7 @@ struct StagingSystem {
     staging_memory: ash::vk::DeviceMemory,
     mapped_memory: *mut c_void,
     free_ptr: std::sync::atomic::AtomicUsize,
+    queued_ownership_transfer: Vec<(Image, u32, u32)>,
 }
 
 impl StagingSystem {
@@ -878,6 +632,7 @@ impl StagingSystem {
             staging_memory,
             mapped_memory,
             free_ptr: std::sync::atomic::AtomicUsize::new(0),
+            queued_ownership_transfer: vec![],
         })
     }
 }
@@ -896,61 +651,164 @@ pub struct VulkanRenderer {
 unsafe impl Send for VulkanRenderer {}
 unsafe impl Sync for VulkanRenderer {}
 
-struct QueueSubmitWaitToken {
-    cmd_buffer: ash::vk::CommandBuffer,
+pub struct QueueSubmitWaitToken {
+    pub cmd_buffer: ash::vk::CommandBuffer,
     wait_fence: ash::vk::Fence,
+    queue_type: QueueType,
+}
+
+pub struct QueuedJob {
+    pub cmd_buffer: ash::vk::CommandBuffer,
+    pub queue_type: QueueType,
 }
 
 impl VulkanRenderer {
-    pub fn create_queue_job(
-        &self,
-        qtype: QueueType,
-    ) -> Result<ash::vk::CommandBuffer, GraphicsError> {
-        let (_, _, cmd_pool, pool_lock, _) = self.device_state.queue_data(qtype);
-        let _ = pool_lock.lock();
+    pub fn queue_ownership_transfer(&mut self, img: &BindlessImageResourceHandleEntryPair) {
+        self.staging_sys.queued_ownership_transfer.push((
+            img.1.image,
+            img.1.info.level_count,
+            img.1.info.layer_count,
+        ));
+    }
+
+    fn do_image_ownership_transfers(&mut self, cmd_buf: CommandBuffer) {
+        if self.staging_sys.queued_ownership_transfer.is_empty() {
+            return;
+        }
+
+        let (qid_graphics, _, _, _, _) = self.device_state.queue_data(QueueType::Graphics);
+        let (qid_transfer, _, _, _, _) = self.device_state.queue_data(QueueType::Transfer);
+
+        let memory_barriers: SmallVec<[ImageMemoryBarrier2; 4]> = self
+            .staging_sys
+            .queued_ownership_transfer
+            .drain(..)
+            .map(|(image, levels, layers)| {
+                *ImageMemoryBarrier2::builder()
+                    .image(image)
+                    .dst_stage_mask(PipelineStageFlags2::ALL_GRAPHICS)
+                    .dst_access_mask(AccessFlags2::SHADER_READ)
+                    .src_queue_family_index(qid_transfer)
+                    .dst_queue_family_index(qid_graphics)
+                    .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .subresource_range(
+                        *ImageSubresourceRange::builder()
+                            .aspect_mask(ImageAspectFlags::COLOR)
+                            .base_mip_level(0)
+                            .level_count(levels)
+                            .base_array_layer(0)
+                            .layer_count(layers),
+                    )
+            })
+            .collect();
+
         unsafe {
-            let cmd_buffers = self.device_state.device.allocate_command_buffers(
-                &CommandBufferAllocateInfo::builder()
-                    .level(CommandBufferLevel::PRIMARY)
-                    .command_buffer_count(1)
-                    .command_pool(cmd_pool),
-            )?;
-
-            self.device_state.device.begin_command_buffer(
-                cmd_buffers[0],
-                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
-            )?;
-
-            Ok(cmd_buffers[0])
+            self.logical().cmd_pipeline_barrier2(
+                cmd_buf,
+                &DependencyInfo::builder()
+                    .dependency_flags(DependencyFlags::BY_REGION)
+                    .image_memory_barriers(&memory_barriers),
+            );
         }
     }
 
-    // pub fn submit_queue_job(
-    //     &self,
-    //     cmd_buf: CommandBuffer,
-    //     qtype: QueueType,
-    // ) -> Result<QueueSubmitWaitToken, GraphicsError> {
-    //     let (_, queue, cmd_pool, pool_lock, queue_lock) = self.device_state.queue_data(qtype);
-    //
-    //     let wait_fence = unsafe {
-    //         self.device_state.device.end_command_buffer(cmd_buf)?;
-    //         self.device_state
-    //             .device
-    //             .create_fence(&FenceCreateInfo::builder(), None)
-    //     }?;
-    //
-    //     scopeguard::defer_on_unwind! {
-    //         unsafe {
-    //             self.device_state.device.destroy_fence(wait_fence, None);
-    //             let _ = pool_lock.lock();
-    //             self.device_state.device.free_command_buffers(cmd_pool, &[cmd_buf]);
-    //         }
-    //     }
-    //
-    //     unsafe {
-    //         self.device_state.device.queue_submit(queue, submits, fence)
-    //     }
-    // }
+    pub fn consume_wait_token(&mut self, token: QueueSubmitWaitToken) {
+        unsafe {
+            let _ = self
+                .logical()
+                .wait_for_fences(&[token.wait_fence], true, std::u64::MAX);
+            self.logical().destroy_fence(token.wait_fence, None);
+        }
+
+        let (_, _, cmd_pool, pool_lock, _) = self.device_state.queue_data(token.queue_type);
+        let _ = pool_lock.lock();
+        unsafe {
+            self.logical()
+                .free_command_buffers(cmd_pool, &[token.cmd_buffer]);
+        }
+    }
+
+    pub fn choose_memory_heap(
+        &self,
+        memory_req: &MemoryRequirements,
+        memory_properties: MemoryPropertyFlags,
+    ) -> u32 {
+        choose_memory_heap(
+            memory_req,
+            memory_properties,
+            &self.device_state.physical.memory_properties,
+        )
+    }
+
+    pub fn create_queue_job(&self, qtype: QueueType) -> Result<QueuedJob, GraphicsError> {
+        let (_, _, cmd_pool, pool_lock, _) = self.device_state.queue_data(qtype);
+        let command_buffer = {
+            let _ = pool_lock.lock();
+            unsafe {
+                let cmd_buffers = self.device_state.device.allocate_command_buffers(
+                    &CommandBufferAllocateInfo::builder()
+                        .level(CommandBufferLevel::PRIMARY)
+                        .command_buffer_count(1)
+                        .command_pool(cmd_pool),
+                )?;
+                cmd_buffers[0]
+            }
+        };
+
+        scopeguard::defer_on_unwind! {
+            let _ = pool_lock.lock();
+            unsafe {self.logical().free_command_buffers(cmd_pool, &[command_buffer]); }
+        }
+
+        unsafe {
+            self.device_state.device.begin_command_buffer(
+                command_buffer,
+                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+            )?;
+        }
+
+        Ok(QueuedJob {
+            cmd_buffer: command_buffer,
+            queue_type: qtype,
+        })
+    }
+
+    pub fn submit_queue_job(&self, job: QueuedJob) -> Result<QueueSubmitWaitToken, GraphicsError> {
+        let (_, queue, cmd_pool, pool_lock, queue_lock) =
+            self.device_state.queue_data(job.queue_type);
+
+        let wait_fence = unsafe {
+            self.device_state
+                .device
+                .end_command_buffer(job.cmd_buffer)?;
+            self.device_state
+                .device
+                .create_fence(&FenceCreateInfo::builder(), None)
+        }?;
+
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                self.device_state.device.destroy_fence(wait_fence, None);
+                let _ = pool_lock.lock();
+                self.device_state.device.free_command_buffers(cmd_pool, &[job.cmd_buffer]);
+            }
+        }
+
+        unsafe {
+            self.device_state.device.queue_submit(
+                queue,
+                &[*SubmitInfo::builder().command_buffers(&[job.cmd_buffer])],
+                wait_fence,
+            )?;
+        }
+
+        Ok(QueueSubmitWaitToken {
+            cmd_buffer: job.cmd_buffer,
+            wait_fence,
+            queue_type: job.queue_type,
+        })
+    }
 
     pub fn reserve_staging_memory(&self, bytes: usize) -> (*mut u8, ash::vk::Buffer, usize) {
         let byte_offset = self
@@ -1131,7 +989,8 @@ impl VulkanRenderer {
                 self.logical().handle(),
                 &ash::vk::DebugUtilsObjectNameInfoEXT::builder()
                     .object_handle(vkobject.as_raw())
-                    .object_name(&std::ffi::CString::new(name).unwrap()),
+                    .object_name(&std::ffi::CString::new(name).unwrap())
+                    .object_type(T::object_type()),
             )
         };
     }
@@ -1315,7 +1174,7 @@ impl std::ops::Drop for VulkanDeviceState {
 }
 
 impl VulkanDeviceState {
-    fn queue_data(
+    pub fn queue_data(
         &self,
         q: QueueType,
     ) -> (
@@ -1360,7 +1219,7 @@ pub struct VulkanSwapchainState {
     pub sem_work_done: Vec<Semaphore>,
     pub sem_img_available: Vec<Semaphore>,
     pub cmd_buffers: Vec<CommandBuffer>,
-    pub image_index: u32,
+    pub frame_index: u32,
     pub max_frames: u32,
 }
 
@@ -1619,19 +1478,20 @@ impl VulkanSwapchainState {
                 )
             }
             .expect("Failed to allocate command buffers"),
-            image_index: 0,
+            frame_index: 0,
             max_frames: ds.surface.caps.max_image_count,
         })
     }
 
     pub fn handle_suboptimal(&mut self, ds: &VulkanDeviceState, renderpass: RenderState) {
-        let (qid, queue, _, _, _) = ds.queue_data(QueueType::Graphics);
+        let (qid, _, _, _, _) = ds.queue_data(QueueType::Graphics);
         unsafe {
             ds.device
-                .queue_wait_idle(queue)
-                .expect("Failed to wait queue idle");
-            ds.device.device_wait_idle().expect("Failed to wait_idle()");
+                .device_wait_idle()
+                .expect("Failed to wait for device idle");
         }
+
+        log::info!("Recreating swapchain");
 
         let recycled_swapchain = {
             let mut swapchain = SwapchainKHR::null();
@@ -1682,7 +1542,7 @@ impl VulkanSwapchainState {
                 ds.device.destroy_image(image, None);
             });
 
-        self.image_index = 0;
+        self.frame_index = 0;
 
         let (mut fences, mut work_done, mut img_avail) =
             Self::create_sync_objects(&ds.device, self.max_frames);
@@ -2364,63 +2224,65 @@ impl VulkanRenderer {
             self.device_state
                 .device
                 .wait_for_fences(
-                    &[self.swapchain.work_fences[self.swapchain.image_index as usize]],
+                    &[self.swapchain.work_fences[self.swapchain.frame_index as usize]],
                     true,
                     u64::MAX,
                 )
                 .expect("Failed to wait for submits");
-        }
 
-        //
-        // acquire next image
-        let swapchain_available_img_index = 'acquire_next_image: loop {
-            match unsafe {
-                self.swapchain.ext.acquire_next_image(
-                    self.swapchain.swapchain,
-                    u64::MAX,
-                    self.swapchain.sem_img_available[self.swapchain.image_index as usize],
-                    Fence::null(),
-                )
-            } {
-                Err(e) => {
-                    if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
-                        log::info!("Swapchain out of date, recreating ...");
-                        self.handle_surface_size_changed(fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
-                    } else {
-                        log::error!("Present error: {:?}", e);
-                        todo!("Handle this ...");
-                    }
-                }
-                Ok((swapchain_available_img_index, suboptimal)) => {
-                    if suboptimal {
-                        log::info!("Swapchain suboptimal, recreating ...");
-                        self.handle_surface_size_changed(fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
-                    } else {
-                        break 'acquire_next_image swapchain_available_img_index;
-                    }
-                }
-            }
-        };
-
-        unsafe {
             self.device_state
                 .device
-                .reset_fences(&[self.swapchain.work_fences[self.swapchain.image_index as usize]])
+                .reset_fences(&[self.swapchain.work_fences[self.swapchain.frame_index as usize]])
                 .expect("Failed to reset fence ...");
         }
 
+        let mut idx = 0u32;
+        let acquired_image = 'acquire_swapchain_image: loop {
+            let acquired_image = unsafe {
+                self.swapchain.ext.acquire_next_image(
+                    self.swapchain.swapchain,
+                    u64::MAX,
+                    self.swapchain.sem_img_available[self.swapchain.frame_index as usize],
+                    Fence::null(),
+                )
+            };
+
+            match acquired_image {
+                Ok((image_idx, suboptimal)) => {
+                    if !suboptimal {
+                        break 'acquire_swapchain_image image_idx;
+                    } else {
+                        self.handle_surface_size_changed(fb_size);
+                        self.swapchain
+                            .handle_suboptimal(&self.device_state, self.renderstate);
+                        idx += 1;
+                    }
+                }
+                Err(acquire_err) => {
+                    if idx >= 2 {
+                        panic!("Failed to acquired new image after {idx} retries, crashing ...");
+                    }
+                    if acquire_err == ash::vk::Result::SUBOPTIMAL_KHR
+                        || acquire_err == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
+                    {
+                        self.handle_surface_size_changed(fb_size);
+                        self.swapchain
+                            .handle_suboptimal(&self.device_state, self.renderstate);
+                        idx += 1;
+                    } else {
+                        panic!("Acquire image fatal error {acquire_err:?}");
+                    }
+                }
+            };
+        };
+
         //
         // begin command buffer + renderpass
-
         unsafe {
             self.device_state
                 .device
                 .reset_command_buffer(
-                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
                     CommandBufferResetFlags::empty(),
                 )
                 .expect("Failed to reset command buffer");
@@ -2428,12 +2290,18 @@ impl VulkanRenderer {
             self.device_state
                 .device
                 .begin_command_buffer(
-                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
                     &CommandBufferBeginInfo::builder()
                         .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer ...");
         }
+
+        //
+        // ensure all loaded images are transfered to the graphics queue
+        self.do_image_ownership_transfers(
+            self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
+        );
 
         let color_clear = ClearValue {
             color: ClearColorValue {
@@ -2455,7 +2323,7 @@ impl VulkanRenderer {
                 // transition attachments from undefined layout to optimal layout
 
                 self.device_state.device.cmd_pipeline_barrier2(
-                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
                     &DependencyInfo::builder()
                         .dependency_flags(DependencyFlags::BY_REGION)
                         .image_memory_barriers(&[
@@ -2468,9 +2336,7 @@ impl VulkanRenderer {
                                 .new_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                                 .src_queue_family_index(qid)
                                 .dst_queue_family_index(qid)
-                                .image(
-                                    self.swapchain.images[swapchain_available_img_index as usize],
-                                )
+                                .image(self.swapchain.images[acquired_image as usize])
                                 .subresource_range(
                                     *ImageSubresourceRange::builder()
                                         .aspect_mask(ImageAspectFlags::COLOR)
@@ -2488,11 +2354,7 @@ impl VulkanRenderer {
                                 .new_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                                 .src_queue_family_index(qid)
                                 .dst_queue_family_index(qid)
-                                .image(
-                                    self.swapchain.depth_stencil
-                                        [self.swapchain.image_index as usize]
-                                        .0,
-                                )
+                                .image(self.swapchain.depth_stencil[acquired_image as usize].0)
                                 .subresource_range(
                                     *ImageSubresourceRange::builder()
                                         .aspect_mask(
@@ -2509,7 +2371,7 @@ impl VulkanRenderer {
                 //
                 // begin rendering
                 self.device_state.device.cmd_begin_rendering(
-                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
                     &RenderingInfo::builder()
                         .render_area(Rect2D {
                             offset: Offset2D::default(),
@@ -2517,9 +2379,7 @@ impl VulkanRenderer {
                         })
                         .layer_count(1)
                         .color_attachments(&[*RenderingAttachmentInfo::builder()
-                            .image_view(
-                                self.swapchain.image_views[swapchain_available_img_index as usize],
-                            )
+                            .image_view(self.swapchain.image_views[acquired_image as usize])
                             .image_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                             .load_op(AttachmentLoadOp::CLEAR)
                             .store_op(AttachmentStoreOp::STORE)
@@ -2527,8 +2387,7 @@ impl VulkanRenderer {
                         .depth_attachment(
                             &RenderingAttachmentInfo::builder()
                                 .image_view(
-                                    self.swapchain.depth_stencil_views
-                                        [self.swapchain.image_index as usize],
+                                    self.swapchain.depth_stencil_views[acquired_image as usize],
                                 )
                                 .image_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                                 .load_op(AttachmentLoadOp::CLEAR)
@@ -2538,8 +2397,7 @@ impl VulkanRenderer {
                         .stencil_attachment(
                             &RenderingAttachmentInfo::builder()
                                 .image_view(
-                                    self.swapchain.depth_stencil_views
-                                        [self.swapchain.image_index as usize],
+                                    self.swapchain.depth_stencil_views[acquired_image as usize],
                                 )
                                 .image_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                                 .load_op(AttachmentLoadOp::CLEAR)
@@ -2550,12 +2408,10 @@ impl VulkanRenderer {
             },
             RenderState::Renderpass(pass) => unsafe {
                 self.device_state.device.cmd_begin_render_pass(
-                    self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
                     &RenderPassBeginInfo::builder()
                         .render_pass(pass)
-                        .framebuffer(
-                            self.swapchain.framebuffers[swapchain_available_img_index as usize],
-                        )
+                        .framebuffer(self.swapchain.framebuffers[acquired_image as usize])
                         .render_area(Rect2D {
                             offset: Offset2D::default(),
                             extent: fb_size,
@@ -2567,10 +2423,10 @@ impl VulkanRenderer {
         }
 
         FrameRenderContext {
-            cmd_buff: self.swapchain.cmd_buffers[self.swapchain.image_index as usize],
+            cmd_buff: self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
             fb_size,
-            current_frame_id: self.swapchain.image_index,
-            swapchain_image_index: swapchain_available_img_index,
+            current_frame_id: self.swapchain.frame_index,
+            acquired_swapchain_image: acquired_image,
         }
     }
 
@@ -2603,7 +2459,9 @@ impl VulkanRenderer {
                             .new_layout(ImageLayout::PRESENT_SRC_KHR)
                             .src_queue_family_index(qid)
                             .dst_queue_family_index(qid)
-                            .image(self.swapchain.images[frame_ctx.swapchain_image_index as usize])
+                            .image(
+                                self.swapchain.images[frame_ctx.acquired_swapchain_image as usize],
+                            )
                             .subresource_range(
                                 *ImageSubresourceRange::builder()
                                     .aspect_mask(ImageAspectFlags::COLOR)
@@ -2619,7 +2477,7 @@ impl VulkanRenderer {
         unsafe {
             self.device_state
                 .device
-                .end_command_buffer(self.swapchain.cmd_buffers[self.swapchain.image_index as usize])
+                .end_command_buffer(self.swapchain.cmd_buffers[self.swapchain.frame_index as usize])
                 .expect("Failed to end command buffer");
         }
 
@@ -2628,34 +2486,56 @@ impl VulkanRenderer {
         unsafe {
             self.device_state
                 .device
-                .queue_submit(
+                .queue_submit2(
                     queue,
-                    &[*SubmitInfo::builder()
-                        .command_buffers(&[
-                            self.swapchain.cmd_buffers[self.swapchain.image_index as usize]
-                        ])
-                        .wait_semaphores(&[
-                            self.swapchain.sem_img_available[self.swapchain.image_index as usize]
-                        ])
-                        .wait_dst_stage_mask(&[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-                        .signal_semaphores(&[
-                            self.swapchain.sem_work_done[self.swapchain.image_index as usize]
-                        ])],
-                    self.swapchain.work_fences[self.swapchain.image_index as usize],
+                    &[*SubmitInfo2::builder()
+                        .wait_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
+                            .semaphore(
+                                self.swapchain.sem_img_available
+                                    [self.swapchain.frame_index as usize],
+                            )
+                            .stage_mask(PipelineStageFlags2::TOP_OF_PIPE)])
+                        .signal_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
+                            .semaphore(
+                                self.swapchain.sem_work_done[self.swapchain.frame_index as usize],
+                            )
+                            .stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)])
+                        .command_buffer_infos(&[*CommandBufferSubmitInfo::builder()
+                            .command_buffer(
+                                self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
+                            )])],
+                    self.swapchain.work_fences[self.swapchain.frame_index as usize],
                 )
+                // .queue_submit(
+                //     queue,
+                //     &[*SubmitInfo::builder()
+                //         .command_buffers(&[
+                //             self.swapchain.cmd_buffers[self.swapchain.frame_index as usize]
+                //         ])
+                //         .wait_semaphores(&[
+                //             self.swapchain.sem_img_available[self.swapchain.frame_index as usize]
+                //         ])
+                //         .wait_dst_stage_mask(&[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
+                //         .signal_semaphores(&[
+                //             self.swapchain.sem_work_done[self.swapchain.frame_index as usize]
+                //         ])],
+                //     self.swapchain.work_fences[self.swapchain.frame_index as usize],
+                // )
                 .expect("Failed to submit work");
 
             match self.swapchain.ext.queue_present(
                 queue,
                 &PresentInfoKHR::builder()
-                    .image_indices(&[self.swapchain.image_index])
+                    .image_indices(&[frame_ctx.acquired_swapchain_image])
                     .swapchains(&[self.swapchain.swapchain])
                     .wait_semaphores(&[
-                        self.swapchain.sem_work_done[self.swapchain.image_index as usize]
+                        self.swapchain.sem_work_done[self.swapchain.frame_index as usize]
                     ]),
             ) {
                 Err(e) => {
-                    if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
+                    if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
+                        || e == ash::vk::Result::SUBOPTIMAL_KHR
+                    {
                         log::info!("Swapchain out of date, recreating ...");
                         self.handle_surface_size_changed(frame_ctx.fb_size);
                         self.swapchain
@@ -2672,11 +2552,12 @@ impl VulkanRenderer {
                         self.swapchain
                             .handle_suboptimal(&self.device_state, self.renderstate);
                     } else {
-                        self.swapchain.image_index =
-                            (self.swapchain.image_index + 1) % self.swapchain.max_frames;
                     }
                 }
-            };
+            }
+
+            self.swapchain.frame_index =
+                (self.swapchain.frame_index + 1) % self.swapchain.max_frames;
         }
     }
 
@@ -2702,8 +2583,8 @@ impl VulkanRenderer {
     ) -> VkResult<ash::vk::SurfaceCapabilitiesKHR> {
         unsafe { surface_ext.get_physical_device_surface_capabilities(phys_device, surface) }.map(
             |surface_caps| {
-                let current_extent = if surface_caps.current_extent.width == 0xffffffff
-                    || surface_caps.current_extent.height == 0xffffffff
+                let current_extent = if surface_caps.current_extent.width == std::u32::MAX
+                    || surface_caps.current_extent.height == std::u32::MAX
                 {
                     //
                     // width and height determined by the swapchain's extent
@@ -2737,71 +2618,13 @@ impl VulkanRenderer {
             },
         )
     }
-
-    // pub fn create_staging_buffer(
-    //     &mut self,
-    //     bytes_size: usize,
-    // ) -> std::result::Result<BufferWithBoundDeviceMemory, GraphicsError> {
-    //     let bytes_size = round_up(bytes_size, self.limits().non_coherent_atom_size as usize) as u64;
-    //
-    //     let buffer = unsafe {
-    //         self.logical().create_buffer(
-    //             &BufferCreateInfo::builder()
-    //                 .usage(BufferUsageFlags::TRANSFER_SRC)
-    //                 .size(bytes_size as u64)
-    //                 .sharing_mode(SharingMode::EXCLUSIVE),
-    //             None,
-    //         )
-    //     }?;
-    //
-    //     let device: *const Device = self.logical() as *const _;
-    //     scopeguard::defer_on_unwind! {
-    //         unsafe {
-    //             (*device).destroy_buffer(buffer, None);
-    //         }
-    //     };
-    //
-    //     let memory_requirements = unsafe {
-    //         let mut memory_requirements = std::mem::MaybeUninit::<MemoryRequirements2>::uninit();
-    //
-    //         self.logical().get_buffer_memory_requirements2(
-    //             &BufferMemoryRequirementsInfo2::builder().buffer(buffer),
-    //             &mut *memory_requirements.as_mut_ptr(),
-    //         );
-    //
-    //         memory_requirements.assume_init()
-    //     };
-    //
-    //     let buffer_memory = unsafe {
-    //         self.logical().allocate_memory(
-    //             &MemoryAllocateInfo::builder()
-    //                 .allocation_size(memory_requirements.memory_requirements.size)
-    //                 .memory_type_index(choose_memory_heap(
-    //                     &memory_requirements.memory_requirements,
-    //                     MemoryPropertyFlags::DEVICE_LOCAL | MemoryPropertyFlags::HOST_VISIBLE,
-    //                     self.memory_properties(),
-    //                 )),
-    //             None,
-    //         )
-    //     }?;
-    //
-    //     scopeguard::defer_on_unwind! {
-    //         unsafe {
-    //             (*device).free_memory(buffer_memory, None);
-    //         }
-    //     };
-    //
-    //     unsafe { self.logical().bind_buffer_memory(buffer, buffer_memory, 0) }?;
-    //
-    //     Ok(BufferWithBoundDeviceMemory(buffer, buffer_memory))
-    // }
 }
 
 pub struct FrameRenderContext {
     pub cmd_buff: CommandBuffer,
     pub fb_size: Extent2D,
     pub current_frame_id: u32,
-    pub swapchain_image_index: u32,
+    pub acquired_swapchain_image: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
@@ -2822,46 +2645,44 @@ impl BindlessResourceType {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct BindlessResourceHandle(u32);
-
-impl BindlessResourceHandle {
-    pub fn get_type(&self) -> BindlessResourceType {
-        let bits = self.0 & 0b11;
-        match bits {
-            0 => BindlessResourceType::Ssbo,
-            1 => BindlessResourceType::CombinedImageSampler,
-            2 => BindlessResourceType::UniformBuffer,
-            _ => todo!("Handle this"),
-        }
-    }
-
-    pub fn get_id(&self) -> u32 {
-        self.0 >> 2
-    }
-
-    pub fn offset(&self, frame: u32) -> BindlessResourceHandle {
-        Self::new(self.get_type(), self.get_id() + frame)
-    }
-
-    pub fn new(ty: BindlessResourceType, id: u32) -> Self {
-        match ty {
-            BindlessResourceType::Ssbo => Self(id << 2),
-            BindlessResourceType::CombinedImageSampler => Self(1 | (id << 2)),
-            BindlessResourceType::UniformBuffer => Self(2 | (id << 2)),
-        }
-    }
-}
+// #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+// pub struct BindlessResourceHandle(u32);
+//
+// impl BindlessResourceHandle {
+//     pub fn get_type(&self) -> BindlessResourceType {
+//         let bits = self.0 & 0b11;
+//         match bits {
+//             0 => BindlessResourceType::Ssbo,
+//             1 => BindlessResourceType::CombinedImageSampler,
+//             2 => BindlessResourceType::UniformBuffer,
+//             _ => todo!("Handle this"),
+//         }
+//     }
+//
+//     pub fn get_id(&self) -> u32 {
+//         self.0 >> 2
+//     }
+//
+//     pub fn offset(&self, frame: u32) -> BindlessResourceHandle {
+//         Self::new(self.get_type(), self.get_id() + frame)
+//     }
+//
+//     pub fn new(ty: BindlessResourceType, id: u32) -> Self {
+//         match ty {
+//             BindlessResourceType::Ssbo => Self(id << 2),
+//             BindlessResourceType::CombinedImageSampler => Self(1 | (id << 2)),
+//             BindlessResourceType::UniformBuffer => Self(2 | (id << 2)),
+//         }
+//     }
+// }
 
 /// Format is
 /// [0..4] frame id [5 .. 15] buffer id
 pub struct GlobalPushConstant(u32);
 
 impl GlobalPushConstant {
-    pub fn from_resource(resource: BindlessResourceHandle, frame_id: u32) -> Self {
-        assert!(frame_id < (1 << 4));
-        assert!(resource.get_id() < 0x7ff);
-        GlobalPushConstant(resource.get_id() << 4 | frame_id)
+    pub fn from_resource<T>(resource: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
+        GlobalPushConstant(resource.handle() | frame_id << 20)
     }
 
     pub fn to_gpu(&self) -> [u8; 4] {
@@ -2877,26 +2698,125 @@ impl std::convert::AsRef<[u8]> for GlobalPushConstant {
     }
 }
 
-#[derive(Copy, Clone)]
-struct WriteBuffer {
-    buffer: Buffer,
-    slabs: usize,
-    slab_size: usize,
-    idx: u32,
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessResourceHandleCore<T> {
+    id: u32,
+    _marker: std::marker::PhantomData<T>,
 }
+
+impl<T> BindlessResourceHandleCore<T> {
+    const HANDLE_MASK: u32 = 0b000000000000_1111_1111_1111_1111_1111;
+    const ELEMENT_MASK: u32 = 0b00000000000000000000_1111_1111_1111;
+
+    pub fn new(resource: u32, array_elements: u32) -> Self {
+        assert!(resource < 1048576);
+        assert!(array_elements < 4096);
+        Self {
+            id: (resource & Self::HANDLE_MASK) | (array_elements << 20),
+            _marker: std::marker::PhantomData {},
+        }
+    }
+
+    pub fn handle(&self) -> u32 {
+        self.id & Self::HANDLE_MASK
+    }
+
+    pub fn array_elements(&self) -> u32 {
+        (self.id >> 20) & Self::ELEMENT_MASK
+    }
+
+    pub fn element_handle(&self, index: usize) -> Self {
+        let elements = self.array_elements();
+        assert!(index < elements as usize);
+
+        Self::new(self.handle() + index as u32, 1)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TagUniformBufferResource {}
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TagStorageBufferResource {}
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct TagImageResource {}
+
+pub type BindlessUniformBufferHandle = BindlessResourceHandleCore<TagUniformBufferResource>;
+pub type BindlessStoragebufferHandle = BindlessResourceHandleCore<TagStorageBufferResource>;
+pub type BindlessImageHandle = BindlessResourceHandleCore<TagImageResource>;
+
+/// Either SBO or UBO
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessResourceEntryBuffer {
+    pub buffer: ash::vk::Buffer,
+    pub devmem: ash::vk::DeviceMemory,
+    pub aligned_slab_size: usize,
+}
+
+impl std::default::Default for BindlessResourceEntryBuffer {
+    fn default() -> Self {
+        Self {
+            buffer: ash::vk::Buffer::null(),
+            devmem: ash::vk::DeviceMemory::null(),
+            aligned_slab_size: 0,
+        }
+    }
+}
+
+/// Image + view
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessResourceEntryImage {
+    pub image: ash::vk::Image,
+    pub devmem: ash::vk::DeviceMemory,
+    pub view: ash::vk::ImageView,
+    pub info: VulkanTextureInfo,
+}
+
+impl std::default::Default for BindlessResourceEntryImage {
+    fn default() -> Self {
+        Self {
+            image: ash::vk::Image::null(),
+            devmem: ash::vk::DeviceMemory::null(),
+            view: ash::vk::ImageView::null(),
+            info: VulkanTextureInfo::default(),
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessUniformBufferResourceHandleEntryPair(
+    pub BindlessUniformBufferHandle,
+    pub BindlessResourceEntryBuffer,
+);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessStorageBufferResourceHandleEntryPair(
+    pub BindlessStoragebufferHandle,
+    pub BindlessResourceEntryBuffer,
+);
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct BindlessImageResourceHandleEntryPair(
+    pub BindlessImageHandle,
+    pub BindlessResourceEntryImage,
+);
 
 pub struct BindlessResourceSystem {
     dpool: DescriptorPool,
     set_layouts: Vec<DescriptorSetLayout>,
     descriptor_sets: Vec<DescriptorSet>,
-    ssbos: Vec<BindlessResourceHandle>,
-    samplers: Vec<BindlessResourceHandle>,
-    ubos: Vec<BindlessResourceHandle>,
     bindless_pipeline_layout: PipelineLayout,
-    ubo_idx: u32,
-    ssbo_idx: u32,
-    ubo_pending_writes: Vec<WriteBuffer>,
-    ssbo_pending_writes: Vec<WriteBuffer>,
+
+    ubo_pending_writes: Vec<(u32, DescriptorBufferInfo)>,
+    ssbo_pending_writes: Vec<(u32, DescriptorBufferInfo)>,
+    cso_pending_writes: Vec<(u32, DescriptorImageInfo)>,
+
+    storage_buffers: Vec<BindlessResourceEntryBuffer>,
+    uniform_buffers: Vec<BindlessResourceEntryBuffer>,
+    combined_samplers: Vec<BindlessResourceEntryImage>,
+
+    sbo_free_slot: std::sync::atomic::AtomicU32,
+    ubo_free_slot: std::sync::atomic::AtomicU32,
+    cso_free_slot: std::sync::atomic::AtomicU32,
 }
 
 impl BindlessResourceSystem {
@@ -2907,12 +2827,7 @@ impl BindlessResourceSystem {
         self.bindless_pipeline_layout
     }
 
-    pub fn make_push_constant(frame: u32, resource: BindlessResourceHandle) -> u32 {
-        let res_id = resource.get_id();
-        frame << 16 | res_id & 0xFFFF
-    }
-
-    pub fn new(vks: &VulkanRenderer) -> Self {
+    pub fn new(vks: &VulkanRenderer) -> Result<Self, GraphicsError> {
         let dpool_sizes = [
             *DescriptorPoolSize::builder()
                 .ty(DescriptorType::UNIFORM_BUFFER)
@@ -2930,11 +2845,10 @@ impl BindlessResourceSystem {
                 &*DescriptorPoolCreateInfo::builder()
                     .flags(ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
                     .pool_sizes(&dpool_sizes)
-                    .max_sets(8),
+                    .max_sets(1024),
                 None,
             )
-        }
-        .expect("Failed to create bindless dpool");
+        }?;
 
         use enum_iterator::all;
 
@@ -2972,8 +2886,7 @@ impl BindlessResourceSystem {
                     .descriptor_pool(dpool)
                     .set_layouts(&set_layouts),
             )
-        }
-        .expect("Failed to allocate bindless descriptor sets");
+        }?;
 
         let bindless_pipeline_layout = unsafe {
             vks.device_state.device.create_pipeline_layout(
@@ -2985,213 +2898,190 @@ impl BindlessResourceSystem {
                         .size(size_of::<u32>() as _)]),
                 None,
             )
-        }
-        .expect("Failed to create bindless pipeline layout");
+        }?;
 
-        Self {
+        Ok(Self {
             dpool,
             set_layouts,
             descriptor_sets,
-            ssbos: vec![],
-            samplers: vec![],
-            ubos: vec![],
             bindless_pipeline_layout,
             ssbo_pending_writes: vec![],
-            ssbo_idx: 0u32,
-            ubo_idx: 0u32,
             ubo_pending_writes: vec![],
-        }
-    }
+            cso_pending_writes: vec![],
 
-    pub fn register_ssbo(
-        &mut self,
-        vks: &VulkanDeviceState,
-        ssbo: &UniqueBuffer,
-    ) -> BindlessResourceHandle {
-        let idx = self.ssbos.len() as u32;
-        let handle = BindlessResourceHandle::new(BindlessResourceType::Ssbo, idx);
-        self.ssbos.push(handle);
+            storage_buffers: vec![],
+            uniform_buffers: vec![],
+            combined_samplers: vec![],
 
-        unsafe {
-            let buf_info = *DescriptorBufferInfo::builder()
-                .buffer(ssbo.handle)
-                .range(WHOLE_SIZE)
-                .offset(0);
-            let write = *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
-                .dst_binding(0)
-                .dst_array_element(idx)
-                .descriptor_type(DescriptorType::STORAGE_BUFFER)
-                .buffer_info(std::slice::from_ref(&buf_info));
-
-            vks.device
-                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
-        }
-
-        handle
-    }
-
-    pub fn register_image(
-        &mut self,
-        vks: &VulkanDeviceState,
-        imgview: &UniqueImageView,
-        sampler: &UniqueSampler,
-    ) -> BindlessResourceHandle {
-        let idx = self.samplers.len() as u32;
-        let handle = BindlessResourceHandle::new(BindlessResourceType::CombinedImageSampler, idx);
-        self.samplers.push(handle);
-
-        unsafe {
-            let img_info = *DescriptorImageInfo::builder()
-                .image_view(imgview.view)
-                .sampler(sampler.handle)
-                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-            let write = *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::CombinedImageSampler as usize])
-                .dst_binding(0)
-                .dst_array_element(idx)
-                .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(std::slice::from_ref(&img_info));
-
-            vks.device
-                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
-        }
-
-        handle
-    }
-
-    fn register_ubo_impl(&mut self, vks: &VulkanRenderer, ubo: Buffer) -> BindlessResourceHandle {
-        let idx = self.ubos.len() as u32;
-        let handle = BindlessResourceHandle::new(BindlessResourceType::UniformBuffer, idx);
-        self.ubos.push(handle);
-
-        let buf_info = *DescriptorBufferInfo::builder()
-            .buffer(ubo)
-            .range(WHOLE_SIZE)
-            .offset(0);
-
-        unsafe {
-            let write = *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
-                .dst_binding(0)
-                .dst_array_element(idx)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(std::slice::from_ref(&buf_info));
-
-            vks.logical()
-                .update_descriptor_sets(std::slice::from_ref(&write), &[]);
-        }
-
-        handle
+            sbo_free_slot: AtomicU32::new(0),
+            ubo_free_slot: AtomicU32::new(0),
+            cso_free_slot: AtomicU32::new(0),
+        })
     }
 
     pub fn register_uniform_buffer(
         &mut self,
-        vks: &VulkanRenderer,
-        ubo: &UniqueBuffer,
-    ) -> BindlessResourceHandle {
-        self.register_ubo_impl(vks, ubo.handle)
-    }
+        ubo: VulkanBuffer,
+        slot: Option<u32>,
+    ) -> BindlessUniformBufferResourceHandleEntryPair {
+        let global_entry = slot.unwrap_or_else(|| {
+            self.ubo_free_slot
+                .fetch_add(ubo.slabs as u32, std::sync::atomic::Ordering::Acquire)
+        });
 
-    pub fn register_uniform_buffer_vkbuffer(
-        &mut self,
-        ubo: &VulkanBuffer,
-    ) -> BindlessResourceHandle {
-        let idx = self.ubo_idx;
-        self.ubo_idx += ubo.slabs as u32;
+        if global_entry >= self.uniform_buffers.len() as u32 {
+            self.uniform_buffers.resize(
+                global_entry as usize + 1,
+                BindlessResourceEntryBuffer::default(),
+            );
+        }
 
-        let handle = BindlessResourceHandle::new(BindlessResourceType::UniformBuffer, idx);
-        self.ubo_pending_writes.push(WriteBuffer {
+        let bindless_handle = BindlessUniformBufferHandle::new(global_entry, ubo.slabs as u32);
+
+        self.ubo_pending_writes.extend((0..ubo.slabs).map(|i| {
+            (
+                global_entry + i as u32,
+                *DescriptorBufferInfo::builder()
+                    .buffer(ubo.buffer)
+                    .offset((ubo.aligned_slab_size * i) as u64)
+                    .range(ubo.aligned_slab_size as u64),
+            )
+        }));
+
+        let ubo_entry_data = BindlessResourceEntryBuffer {
             buffer: ubo.buffer,
-            slabs: ubo.slabs,
-            slab_size: ubo.aligned_slab_size,
-            idx,
-        });
+            devmem: ubo.memory,
+            aligned_slab_size: ubo.aligned_slab_size,
+        };
 
-        handle
+        self.uniform_buffers[global_entry as usize] = ubo_entry_data;
+        std::mem::forget(ubo);
+        BindlessUniformBufferResourceHandleEntryPair(bindless_handle, ubo_entry_data)
     }
 
-    pub fn register_storage_buffer(&mut self, ssbo: &VulkanBuffer) -> BindlessResourceHandle {
-        let idx = self.ssbo_idx;
-        self.ssbo_idx += ssbo.slabs as u32;
-
-        let handle = BindlessResourceHandle::new(BindlessResourceType::Ssbo, idx);
-        self.ssbo_pending_writes.push(WriteBuffer {
-            buffer: ssbo.buffer,
-            slabs: ssbo.slabs,
-            slab_size: ssbo.aligned_slab_size,
-            idx,
+    pub fn register_storage_buffer(
+        &mut self,
+        sbo: VulkanBuffer,
+        slot: Option<u32>,
+    ) -> BindlessStorageBufferResourceHandleEntryPair {
+        let global_entry = slot.unwrap_or_else(|| {
+            self.sbo_free_slot
+                .fetch_add(sbo.slabs as u32, std::sync::atomic::Ordering::Acquire)
         });
 
-        handle
+        if global_entry >= self.storage_buffers.len() as u32 {
+            self.storage_buffers.resize(
+                global_entry as usize + 1,
+                BindlessResourceEntryBuffer::default(),
+            );
+        }
+
+        let bindless_handle = BindlessStoragebufferHandle::new(global_entry, sbo.slabs as u32);
+
+        self.ssbo_pending_writes.extend((0..sbo.slabs).map(|i| {
+            (
+                global_entry + i as u32,
+                *DescriptorBufferInfo::builder()
+                    .buffer(sbo.buffer)
+                    .offset((i * sbo.aligned_slab_size) as u64)
+                    .range(sbo.aligned_slab_size as u64),
+            )
+        }));
+
+        let sbo_entry_data = BindlessResourceEntryBuffer {
+            buffer: sbo.buffer,
+            devmem: sbo.memory,
+            aligned_slab_size: sbo.aligned_slab_size,
+        };
+
+        self.storage_buffers[global_entry as usize] = sbo_entry_data;
+        std::mem::forget(sbo);
+        BindlessStorageBufferResourceHandleEntryPair(bindless_handle, sbo_entry_data)
+    }
+
+    pub fn register_image(
+        &mut self,
+        image: UniqueImage,
+        sampler: &UniqueSampler,
+        slot: Option<u32>,
+    ) -> BindlessImageResourceHandleEntryPair {
+        let global_entry = slot.unwrap_or_else(|| {
+            self.cso_free_slot
+                .fetch_add(1u32, std::sync::atomic::Ordering::Acquire)
+        });
+
+        if global_entry >= self.combined_samplers.len() as u32 {
+            self.combined_samplers.resize(
+                global_entry as usize + 1,
+                BindlessResourceEntryImage::default(),
+            );
+        }
+
+        let bindless_handle = BindlessImageHandle::new(global_entry, 1);
+        self.cso_pending_writes.push((
+            global_entry,
+            *DescriptorImageInfo::builder()
+                .sampler(sampler.handle)
+                .image_view(image.view)
+                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+        ));
+
+        let cso_entry_data = BindlessResourceEntryImage {
+            image: image.image,
+            devmem: image.memory,
+            view: image.view,
+            info: image.info,
+        };
+
+        self.combined_samplers[global_entry as usize] = cso_entry_data;
+        std::mem::forget(image);
+
+        BindlessImageResourceHandleEntryPair(bindless_handle, cso_entry_data)
     }
 
     pub fn flush_pending_updates(&mut self, vks: &VulkanRenderer) {
-        let pending_writes = self
-            .ubo_pending_writes
-            .iter()
-            .chain(self.ssbo_pending_writes.iter())
-            .map(|pending_write| pending_write.slabs)
-            .sum();
+        let mut descriptor_writes = Vec::<WriteDescriptorSet>::new();
 
-        if pending_writes == 0 {
-            return;
-        }
+        dbg!(&self.ubo_pending_writes);
+        descriptor_writes.extend(self.ubo_pending_writes.iter().map(|pwrite| {
+            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
+                .dst_binding(0)
+                .dst_array_element(pwrite.0)
+                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
+                .buffer_info(s)
+        }));
 
-        let mut buffer_infos = SmallVec::<[DescriptorBufferInfo; 8]>::with_capacity(pending_writes);
-        let mut descriptor_writes = SmallVec::<[WriteDescriptorSet; 2]>::new();
+        descriptor_writes.extend(self.ssbo_pending_writes.iter().map(|pwrite| {
+            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
+                .dst_binding(0)
+                .dst_array_element(pwrite.0)
+                .descriptor_type(DescriptorType::STORAGE_BUFFER)
+                .buffer_info(s)
+        }));
 
-        if !self.ubo_pending_writes.is_empty() {
-            let dst_array_element = self.ubo_pending_writes[0].idx;
+        descriptor_writes.extend(self.cso_pending_writes.iter().map(|pwrite| {
+            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            *WriteDescriptorSet::builder()
+                .dst_set(self.descriptor_sets[BindlessResourceType::CombinedImageSampler as usize])
+                .dst_binding(0)
+                .dst_array_element(pwrite.0)
+                .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
+                .image_info(s)
+        }));
 
-            for pending_write in self.ubo_pending_writes.drain(..) {
-                buffer_infos.extend((0..pending_write.slabs).map(|slab| {
-                    *DescriptorBufferInfo::builder()
-                        .buffer(pending_write.buffer)
-                        .offset((slab * pending_write.slab_size) as DeviceSize)
-                        .range(pending_write.slab_size as DeviceSize)
-                }));
-            }
-
-            descriptor_writes.push(
-                *WriteDescriptorSet::builder()
-                    .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
-                    .dst_binding(0)
-                    .dst_array_element(dst_array_element)
-                    .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                    .buffer_info(&buffer_infos[0..]),
-            );
-        }
-
-        if !self.ssbo_pending_writes.is_empty() {
-            let dst_array_element = self.ssbo_pending_writes[0].idx;
-            let ssbo_offset = buffer_infos.len();
-
-            for pending_write in self.ssbo_pending_writes.drain(..) {
-                buffer_infos.extend((0..pending_write.slabs).map(|slab| {
-                    *DescriptorBufferInfo::builder()
-                        .buffer(pending_write.buffer)
-                        .offset((slab * pending_write.slab_size) as DeviceSize)
-                        .range(pending_write.slab_size as DeviceSize)
-                }));
-            }
-
-            descriptor_writes.push(
-                *WriteDescriptorSet::builder()
-                    .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
-                    .dst_binding(0)
-                    .dst_array_element(dst_array_element)
-                    .descriptor_type(DescriptorType::STORAGE_BUFFER)
-                    .buffer_info(&buffer_infos[ssbo_offset..]),
-            );
-        }
-
-        dbg!(&buffer_infos);
         dbg!(&descriptor_writes);
 
         unsafe {
             vks.logical()
                 .update_descriptor_sets(&descriptor_writes, &[]);
+
+            self.ubo_pending_writes.clear();
+            self.ssbo_pending_writes.clear();
+            self.cso_pending_writes.clear();
         }
     }
 
@@ -3583,6 +3473,22 @@ impl<'a> GraphicsPipelineSetupHelper<'a> {
     }
 }
 
+// pub struct QueueSubmitToken {
+//     pub cmd_buffer: ash::vk::CommandBuffer,
+//     pub fence: ash::vk::Fence,
+// }
+//
+// impl QueueSubmitToken {
+//     pub fn consume(self, renderer: &mut VulkanRenderer) {
+//         unsafe {
+//             let _ = renderer
+//                 .logical()
+//                 .wait_for_fences(&[self.fence], true, std::u64::MAX);
+//             renderer.logical().destroy_fence(self.fence, None);
+//         }
+//     }
+// }
+
 pub mod misc {
     pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
         use std::io::Write;
@@ -3592,5 +3498,22 @@ pub mod misc {
         pixels.chunks(4).for_each(|c| {
             writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_bindless_handle() {
+        use super::*;
+
+        let b0 = BindlessStoragebufferHandle::new(9876, 3456);
+        assert_eq!(b0.handle(), 9876);
+        assert_eq!(b0.array_elements(), 3456);
+
+        let b1 = b0.element_handle(1000);
+        assert_eq!(b1.handle(), 10876);
+        assert_eq!(b1.array_elements(), 1);
     }
 }

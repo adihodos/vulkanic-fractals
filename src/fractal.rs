@@ -1,21 +1,23 @@
 use ash::vk::{
-    BorderColor, BufferUsageFlags, ComponentSwizzle, CullModeFlags, DynamicState, Extent3D, Filter,
-    Format, FrontFace, ImageLayout, ImageTiling, ImageType, ImageUsageFlags, ImageViewCreateInfo,
-    MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineDepthStencilStateCreateInfo,
-    PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SampleCountFlags,
-    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, SharingMode,
-    Viewport,
+    BorderColor, BufferUsageFlags, CommandBuffer, ComponentSwizzle, CullModeFlags, DynamicState,
+    Extent3D, Filter, Format, FrontFace, ImageLayout, ImageTiling, ImageType, ImageUsageFlags,
+    ImageViewCreateInfo, MemoryPropertyFlags, Offset2D, PipelineBindPoint,
+    PipelineDepthStencilStateCreateInfo, PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D,
+    SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
+    SharingMode, Viewport,
 };
 use crevice::std140::AsStd140;
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
     shader::ShaderSource,
+    vulkan_image::{UniqueImage, VulkanImageCreateInfo},
     vulkan_renderer::{
-        BindlessResourceHandle, BindlessResourceSystem, FrameRenderContext, GlobalPushConstant,
-        GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, UniqueBufferMapping,
-        UniqueImage, UniqueImageView, UniquePipeline, UniqueSampler, VulkanBuffer,
-        VulkanBufferCreateInfo, VulkanRenderer,
+        BindlessImageResourceHandleEntryPair, BindlessResourceSystem,
+        BindlessStorageBufferResourceHandleEntryPair, BindlessUniformBufferResourceHandleEntryPair,
+        FrameRenderContext, GlobalPushConstant, GraphicsPipelineCreateOptions,
+        GraphicsPipelineSetupHelper, QueueType, UniqueBufferMapping, UniquePipeline, UniqueSampler,
+        VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
     },
     InputState,
 };
@@ -542,7 +544,7 @@ impl Julia {
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
                 JuliaIterationType::Quadratic,
-                gpu_state.palette_handle.get_id(),
+                gpu_state.palettes.0.handle(),
             ),
             gpu_state,
             point_quadratic_idx: 0,
@@ -706,8 +708,6 @@ enum MandelbrotType {
 struct MandelbrotCPU2GPU {
     core: FractalCommonCore,
     ftype: u32,
-    // palette_handle: u32,
-    // pallete_index: u32,
 }
 
 impl FractalCoreParams for MandelbrotCPU2GPU {
@@ -745,9 +745,7 @@ impl Mandelbrot {
         let gpu_state = FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless);
         Self {
             params: MandelbrotCPU2GPU {
-                core: FractalCommonCore::new::<MandelbrotCPU2GPU>(
-                    gpu_state.palette_handle.get_id(),
-                ),
+                core: FractalCommonCore::new::<MandelbrotCPU2GPU>(gpu_state.palettes.0.handle()),
                 ftype: MandelbrotType::Standard as _,
             },
             gpu_state,
@@ -800,16 +798,13 @@ impl Mandelbrot {
 
 struct FractalGPUState {
     pipeline: UniquePipeline,
-    ubo_params: VulkanBuffer,
-    ubo_handle: BindlessResourceHandle,
-    palettes: UniqueImage,
-    palettes_view: UniqueImageView,
+    ubo_handle: BindlessStorageBufferResourceHandleEntryPair,
+    palettes: BindlessImageResourceHandleEntryPair,
     sampler: UniqueSampler,
-    palette_handle: BindlessResourceHandle,
 }
 
 impl FractalGPUState {
-    fn make_palettes(vks: &mut VulkanRenderer) -> (UniqueImage, UniqueImageView, UniqueSampler) {
+    fn make_palettes(vks: &mut VulkanRenderer) -> (UniqueImage, UniqueSampler) {
         use enterpolation::{linear::ConstEquidistantLinear, Curve};
         use palette::{rgb, LinSrgb, Srgb};
 
@@ -831,46 +826,29 @@ impl FractalGPUState {
             unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) };
         crate::vulkan_renderer::misc::write_ppm("color.palette.ppm", 512, 1, pixels);
 
-        use ash::vk::ImageCreateInfo;
+        let qjob = vks.create_queue_job(QueueType::Transfer).unwrap();
         let palette = UniqueImage::from_bytes(
             vks,
-            *ImageCreateInfo::builder()
-                .usage(ImageUsageFlags::SAMPLED | ImageUsageFlags::TRANSFER_DST)
-                .tiling(ImageTiling::OPTIMAL)
-                .format(Format::R8G8B8A8_UNORM)
-                .samples(SampleCountFlags::TYPE_1)
-                .mip_levels(1)
-                .array_layers(1)
-                .extent(*Extent3D::builder().width(512).height(1).depth(1))
-                .image_type(ImageType::TYPE_1D)
-                .initial_layout(ImageLayout::UNDEFINED)
-                .sharing_mode(SharingMode::EXCLUSIVE),
-            unsafe { std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4) },
-        );
-
-        let palette_view = UniqueImageView::new(
-            vks,
-            &palette,
-            *ImageViewCreateInfo::builder()
-                .format(ash::vk::Format::R8G8B8A8_UNORM)
-                .image(palette.image)
-                .subresource_range(
-                    *ash::vk::ImageSubresourceRange::builder()
-                        .aspect_mask(ash::vk::ImageAspectFlags::COLOR)
-                        .base_array_layer(0)
-                        .base_mip_level(0)
-                        .layer_count(1)
-                        .level_count(1),
-                )
-                .view_type(ash::vk::ImageViewType::TYPE_1D_ARRAY)
-                .components(
-                    *ash::vk::ComponentMapping::builder()
-                        .a(ComponentSwizzle::IDENTITY)
-                        .r(ComponentSwizzle::IDENTITY)
-                        .g(ComponentSwizzle::IDENTITY)
-                        .b(ComponentSwizzle::IDENTITY),
-                ),
-        );
+            &VulkanImageCreateInfo {
+                tag_name: Some("UI color palette"),
+                work_pkg: &qjob,
+                ty: ImageType::TYPE_2D,
+                usage: ImageUsageFlags::SAMPLED,
+                memory: MemoryPropertyFlags::DEVICE_LOCAL,
+                format: Format::R8G8B8A8_UNORM,
+                cubemap: false,
+                width: 512,
+                height: 1,
+                depth: 1,
+                layers: 1,
+                pixels: &[unsafe {
+                    std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4)
+                }],
+            },
+        )
+        .expect("Failed to create color pallette");
+        let wait_token = vks.submit_queue_job(qjob).unwrap();
+        vks.consume_wait_token(wait_token);
 
         let sampler = UniqueSampler::new(
             vks,
@@ -884,11 +862,11 @@ impl FractalGPUState {
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
         );
 
-        (palette, palette_view, sampler)
+        (palette, sampler)
     }
 
     fn new<T: FractalCoreParams>(
-        vks: &mut VulkanRenderer,
+        renderer: &mut VulkanRenderer,
         bindless: &mut BindlessResourceSystem,
     ) -> Self {
         let pipeline = GraphicsPipelineSetupHelper::new()
@@ -916,7 +894,7 @@ impl FractalGPUState {
                 DynamicState::SCISSOR_WITH_COUNT,
             ])
             .create(
-                vks,
+                renderer,
                 GraphicsPipelineCreateOptions {
                     layout: Some(bindless.pipeline_layout()),
                 },
@@ -924,34 +902,32 @@ impl FractalGPUState {
             .expect("Oyyy blyat, failed to create pipeline");
 
         let ubo_params = VulkanBuffer::create(
-            vks,
+            renderer,
             &VulkanBufferCreateInfo {
                 name_tag: None,
                 work_package: None,
                 usage: BufferUsageFlags::STORAGE_BUFFER,
                 memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
                     | MemoryPropertyFlags::HOST_VISIBLE,
-                slabs: vks.swapchain.max_frames as usize,
+                slabs: renderer.swapchain.max_frames as usize,
                 bytes: T::ssbo_size(),
                 initial_data: &[],
             },
         )
         .expect("Failed to create fractal parameters buffer");
 
-        let ubo_handle = bindless.register_storage_buffer(&ubo_params);
-        let (palettes, palettes_view, sampler) = Self::make_palettes(vks);
-        let palette_handle = bindless.register_image(&vks.device_state, &palettes_view, &sampler);
+        let ubo_handle = bindless.register_storage_buffer(ubo_params, None);
+        let (palette_image, sampler) = Self::make_palettes(renderer);
+        let palettes = bindless.register_image(palette_image, &sampler, None);
+        renderer.queue_ownership_transfer(&palettes);
 
         log::info!("fractal ubo {ubo_handle:?}");
 
         Self {
-            pipeline,
-            ubo_params,
             ubo_handle,
+            pipeline,
             palettes,
-            palettes_view,
             sampler,
-            palette_handle,
         }
     }
 
@@ -964,12 +940,15 @@ impl FractalGPUState {
         //
         // copy params
 
-        self.ubo_params
-            .map_slab(vks, context.current_frame_id)
-            .map(|mapped_buffer| {
-                mapped_buffer.write_data(gpu_data);
-            })
-            .expect("Failed to map GPU buffer");
+        let _ = UniqueBufferMapping::map_memory(
+            vks.logical(),
+            self.ubo_handle.1.devmem,
+            self.ubo_handle.1.aligned_slab_size * context.current_frame_id as usize,
+            self.ubo_handle.1.aligned_slab_size,
+        )
+        .map(|mapped_buffer| {
+            mapped_buffer.write_data(gpu_data);
+        });
 
         unsafe {
             vks.device_state.device.cmd_set_viewport_with_count(
@@ -999,7 +978,7 @@ impl FractalGPUState {
                 self.pipeline.layout(),
                 ShaderStageFlags::ALL,
                 0,
-                &GlobalPushConstant::from_resource(self.ubo_handle, context.current_frame_id)
+                &GlobalPushConstant::from_resource(self.ubo_handle.0, context.current_frame_id)
                     .to_gpu(),
             );
 
