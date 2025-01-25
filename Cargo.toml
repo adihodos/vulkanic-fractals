@@ -10,7 +10,7 @@ log = { version = "*"}
 flexi_logger = "*"
 winit = "*"
 enum-iterator = "*"
-ash = { version = "*", features = [ "linked" ] }
+ash = { version = "0.38.0", features = [ "linked" ] }
 shaderc = { version = "0.8.3", features = [ "prefer-static-linking" ] }
 imgui = "0.11.0"
 thiserror = "1.0.63"
@@ -24,3 +24,7 @@ scopeguard = "1.2.0"
 smallvec = "1.13.2"
 typeid = "1.0.2"
 tokio = { version = "1.43.0", features = [ "rt-multi-thread", "time", "process", "sync" ] }
+
+# [build-dependencies]
+# copy_to_output = "2.2.0"
+# glob = "0.3.2"

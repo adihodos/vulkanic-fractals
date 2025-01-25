@@ -1,63 +1,21 @@
-use std::{
-    ffi::{c_char, c_void, CString},
-    mem::size_of,
-    sync::atomic::AtomicU32,
+use std::ffi::CString;
+
+use ash::vk::{
+    AccessFlags2, AttachmentLoadOp, AttachmentStoreOp, CommandBuffer,
+    DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT, DependencyFlags,
+    DependencyInfo, DescriptorSetLayout, DeviceMemory, Extent3D, Fence, Format, Framebuffer, Image,
+    ImageAspectFlags, ImageCreateInfo, ImageLayout, ImageMemoryBarrier2, ImageSubresourceRange,
+    ImageTiling, ImageType, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
+    MemoryAllocateInfo, MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineStageFlags2,
+    Rect2D, SampleCountFlags, Semaphore, SharingMode,
 };
 
-use ash::{
-    extensions::ext::DebugUtils,
-    vk::{
-        AccessFlags, AccessFlags2, ApplicationInfo, AttachmentDescription, AttachmentLoadOp,
-        AttachmentReference, AttachmentStoreOp, BlendFactor, BlendOp, Buffer, BufferCopy,
-        BufferCreateFlags, BufferCreateInfo, BufferImageCopy, BufferMemoryRequirementsInfo2,
-        BufferUsageFlags, ClearColorValue, ClearDepthStencilValue, ClearValue, ColorComponentFlags,
-        CommandBuffer, CommandBufferAllocateInfo, CommandBufferBeginInfo, CommandBufferLevel,
-        CommandBufferResetFlags, CommandBufferSubmitInfo, CommandBufferUsageFlags, CommandPool,
-        CommandPoolCreateFlags, CommandPoolCreateInfo, CompareOp, ComponentMapping,
-        ComponentSwizzle, CompositeAlphaFlagsKHR, CullModeFlags, DebugUtilsLabelEXT,
-        DebugUtilsMessageSeverityFlagsEXT, DebugUtilsMessageTypeFlagsEXT,
-        DebugUtilsMessengerCreateInfoEXT, DebugUtilsMessengerEXT, DependencyFlags, DependencyInfo,
-        DescriptorBindingFlags, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool,
-        DescriptorPoolCreateInfo, DescriptorPoolSize, DescriptorSet, DescriptorSetAllocateInfo,
-        DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutBindingFlagsCreateInfo,
-        DescriptorSetLayoutCreateInfo, DescriptorType, DeviceCreateInfo, DeviceMemory,
-        DeviceQueueCreateInfo, DeviceSize, DynamicState, Extent2D, Fence, FenceCreateFlags,
-        FenceCreateInfo, Format, Framebuffer, FramebufferCreateInfo, FrontFace,
-        GraphicsPipelineCreateInfo, Image, ImageAspectFlags, ImageCreateFlags, ImageCreateInfo,
-        ImageLayout, ImageMemoryBarrier, ImageMemoryBarrier2, ImageSubresourceLayers,
-        ImageSubresourceRange, ImageUsageFlags, ImageView, ImageViewCreateInfo, ImageViewType,
-        InstanceCreateInfo, MappedMemoryRange, MemoryAllocateInfo, MemoryBarrier2, MemoryMapFlags,
-        MemoryPropertyFlags, MemoryRequirements, MemoryRequirements2, Offset2D, PhysicalDevice,
-        PhysicalDeviceFeatures, PhysicalDeviceFeatures2, PhysicalDeviceMemoryProperties,
-        PhysicalDeviceProperties2, PhysicalDeviceType, PhysicalDeviceVulkan11Features,
-        PhysicalDeviceVulkan11Properties, PhysicalDeviceVulkan12Features,
-        PhysicalDeviceVulkan12Properties, PhysicalDeviceVulkan13Features,
-        PhysicalDeviceVulkan13Properties, Pipeline, PipelineBindPoint, PipelineCache,
-        PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo,
-        PipelineDynamicStateCreateInfo, PipelineLayout, PipelineLayoutCreateInfo,
-        PipelineMultisampleStateCreateInfo, PipelineRasterizationStateCreateInfo,
-        PipelineRenderingCreateInfo, PipelineShaderStageCreateInfo, PipelineStageFlags,
-        PipelineStageFlags2, PipelineVertexInputStateCreateInfo, PolygonMode, PresentInfoKHR,
-        PresentModeKHR, PushConstantRange, Queue, Rect2D, RenderPassBeginInfo,
-        RenderPassCreateInfo, RenderingAttachmentInfo, RenderingInfo, SampleCountFlags, Sampler,
-        SamplerCreateInfo, Semaphore, SemaphoreCreateInfo, SemaphoreSubmitInfo, ShaderModule,
-        ShaderStageFlags, SharingMode, SubmitInfo, SubmitInfo2, SubpassContents,
-        SubpassDescription, SurfaceFormatKHR, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR,
-        VertexInputAttributeDescription, VertexInputRate, WriteDescriptorSet, WHOLE_SIZE,
-    },
-    Device, Entry, Instance,
-};
-
-use ash::{
-    prelude::*,
-    vk::{Extent3D, ImageTiling, ImageType},
-};
 use smallvec::SmallVec;
 
 use crate::{
-    shader::ShaderSource,
-    spin_mutex::{self, SpinMutex},
-    vulkan_image::{UniqueImage, VulkanTextureInfo},
+    //     shader::ShaderSource,
+    spin_mutex::SpinMutex,
+    //     vulkan_image::{UniqueImage, VulkanTextureInfo},
 };
 
 pub trait VkObjectType {
@@ -109,608 +67,518 @@ pub enum GraphicsError {
     Generic(String),
 }
 
-#[derive(Copy, Clone, Debug, thiserror::Error)]
-pub enum VulkanSystemError {
-    #[error("vulkan api error")]
-    VulkanResult(#[from] ash::vk::Result),
+pub struct VulkanSurfaceWithInstance {
+    pub ext: ash::khr::surface::Instance,
+    pub surface: ash::vk::SurfaceKHR,
 }
 
-pub struct UniqueSampler {
-    device: *const Device,
-    pub handle: Sampler,
-}
-
-impl UniqueSampler {
-    pub fn new(vks: &VulkanRenderer, create_info: SamplerCreateInfo) -> UniqueSampler {
-        let handle = unsafe { vks.device_state.device.create_sampler(&create_info, None) }
-            .expect("Failed to create sampler");
-
-        UniqueSampler {
-            device: &vks.device_state.device as *const _,
-            handle,
-        }
-    }
-}
-
-enum PipelineData {
-    Owned {
-        layout: PipelineLayout,
-        descriptor_set_layout: Vec<DescriptorSetLayout>,
-    },
-    Reference {
-        layout: PipelineLayout,
-    },
-}
-
-impl PipelineData {
-    fn layout(&self) -> PipelineLayout {
-        match self {
-            PipelineData::Reference { layout } => *layout,
-            PipelineData::Owned { layout, .. } => *layout,
-        }
-    }
-}
-
-pub struct UniquePipeline {
-    device: *const Device,
-    handle: Pipeline,
-    data: PipelineData,
-}
-
-impl std::ops::Drop for UniquePipeline {
-    fn drop(&mut self) {
-        match &self.data {
-            PipelineData::Owned {
-                layout,
-                descriptor_set_layout,
-            } => {
-                descriptor_set_layout.iter().for_each(|&ds_layout| unsafe {
-                    (*self.device).destroy_descriptor_set_layout(ds_layout, None);
-                });
-
-                unsafe {
-                    (*self.device).destroy_pipeline_layout(*layout, None);
-                }
-            }
-
-            PipelineData::Reference { .. } => {}
-        }
-
-        unsafe {
-            (*self.device).destroy_pipeline(self.handle, None);
-        }
-    }
-}
-
-impl UniquePipeline {
-    pub fn handle(&self) -> ash::vk::Pipeline {
-        self.handle
-    }
-
-    pub fn layout(&self) -> ash::vk::PipelineLayout {
-        self.data.layout()
-    }
-}
-
-pub fn choose_memory_heap(
-    memory_req: &MemoryRequirements,
-    required_flags: MemoryPropertyFlags,
-    memory_properties: &PhysicalDeviceMemoryProperties,
-) -> u32 {
-    for memory_type in 0..32 {
-        if (memory_req.memory_type_bits & (1u32 << memory_type)) != 0 {
-            if memory_properties.memory_types[memory_type]
-                .property_flags
-                .contains(required_flags)
-            {
-                return memory_type as u32;
-            }
-        }
-    }
-
-    panic!("Device does not support memory {:?}", required_flags);
-}
-
-pub struct UniqueShaderModule {
-    pub(crate) device: *const ash::Device,
-    pub(crate) module: ShaderModule,
-}
-
-impl std::ops::Deref for UniqueShaderModule {
-    type Target = ShaderModule;
-
-    fn deref(&self) -> &Self::Target {
-        &self.module
-    }
-}
-
-impl std::ops::Drop for UniqueShaderModule {
+impl std::ops::Drop for VulkanSurfaceWithInstance {
     fn drop(&mut self) {
         unsafe {
-            (*self.device).destroy_shader_module(self.module, None);
+            self.ext.destroy_surface(self.surface, None);
         }
     }
 }
 
-pub struct VulkanBufferCreateInfo<'a> {
-    pub name_tag: Option<&'a str>,
-    pub work_package: Option<&'a QueuedJob>,
-    pub usage: BufferUsageFlags,
-    pub memory_properties: MemoryPropertyFlags,
-    pub slabs: usize,
-    pub bytes: usize,
-    pub initial_data: &'a [&'a [u8]],
+pub struct VulkanDeviceState {
+    debug: ash::ext::debug_utils::Device,
+    pipeline_cache: ash::vk::PipelineCache,
+    null_descriptor_layout: ash::vk::DescriptorSetLayout,
+    pub render_state: RenderState,
+    pub physical: PhysicalDeviceState,
+    pub logical: ash::Device,
 }
 
-pub struct VulkanBuffer {
-    device: *const Device,
-    pub buffer: Buffer,
-    pub memory: DeviceMemory,
-    pub slabs: usize,
-    pub aligned_slab_size: usize,
-}
-
-impl std::ops::Drop for VulkanBuffer {
+impl std::ops::Drop for VulkanDeviceState {
     fn drop(&mut self) {
         unsafe {
-            (*self.device).free_memory(self.memory, None);
-            (*self.device).destroy_buffer(self.buffer, None);
+            self.logical
+                .destroy_pipeline_cache(self.pipeline_cache, None);
+            self.logical
+                .destroy_descriptor_set_layout(self.null_descriptor_layout, None);
+            self.logical.destroy_device(None);
         }
     }
 }
 
-impl VulkanBuffer {
-    pub fn size_bytes(&self) -> usize {
-        self.aligned_slab_size * self.slabs
-    }
-
+impl VulkanDeviceState {
     pub fn create(
-        renderer: &mut VulkanRenderer,
-        create_info: &VulkanBufferCreateInfo,
-    ) -> std::result::Result<VulkanBuffer, GraphicsError> {
-        let memory_host_access: MemoryPropertyFlags = MemoryPropertyFlags::HOST_VISIBLE
-            | MemoryPropertyFlags::HOST_COHERENT
-            | MemoryPropertyFlags::HOST_CACHED;
+        instance: &ash::Instance,
+        physical: PhysicalDeviceState,
+        surface: &VulkanSurfaceState,
+        queue_families: &[u32],
+        queue_priorities: &[f32],
+    ) -> std::result::Result<VulkanDeviceState, GraphicsError> {
+        let mut feature_shader_draw_params =
+            ash::vk::PhysicalDeviceShaderDrawParametersFeatures::default()
+                .shader_draw_parameters(true);
 
-        let alignment_by_memory_access =
-            if create_info.memory_properties.intersects(memory_host_access) {
-                renderer.limits().non_coherent_atom_size
-            } else {
-                0
-            };
+        let mut feature_descriptor_indexing =
+            ash::vk::PhysicalDeviceDescriptorIndexingFeatures::default()
+                .shader_input_attachment_array_dynamic_indexing(true)
+                .shader_uniform_texel_buffer_array_dynamic_indexing(true)
+                .shader_storage_texel_buffer_array_dynamic_indexing(true)
+                .shader_uniform_buffer_array_non_uniform_indexing(true)
+                .shader_sampled_image_array_non_uniform_indexing(true)
+                .shader_storage_buffer_array_non_uniform_indexing(true)
+                .shader_storage_image_array_non_uniform_indexing(true)
+                .shader_input_attachment_array_non_uniform_indexing(true)
+                .shader_uniform_texel_buffer_array_non_uniform_indexing(true)
+                .shader_storage_texel_buffer_array_non_uniform_indexing(true)
+                .descriptor_binding_sampled_image_update_after_bind(true)
+                .descriptor_binding_storage_image_update_after_bind(true)
+                .descriptor_binding_storage_buffer_update_after_bind(true)
+                .descriptor_binding_uniform_texel_buffer_update_after_bind(true)
+                .descriptor_binding_storage_texel_buffer_update_after_bind(true)
+                .descriptor_binding_update_unused_while_pending(true)
+                .descriptor_binding_partially_bound(true)
+                .descriptor_binding_variable_descriptor_count(true)
+                .runtime_descriptor_array(true);
 
-        let alignment_by_usage = {
-            if create_info
-                .usage
-                .intersects(BufferUsageFlags::UNIFORM_BUFFER)
-            {
-                renderer.limits().min_uniform_buffer_offset_alignment
-            } else if create_info
-                .usage
-                .intersects(BufferUsageFlags::STORAGE_BUFFER)
-            {
-                renderer.limits().min_storage_buffer_offset_alignment
-            } else {
-                renderer.limits().non_coherent_atom_size
-            }
-        };
+        let mut feature_dynamic_rendering =
+            ash::vk::PhysicalDeviceDynamicRenderingFeatures::default().dynamic_rendering(true);
 
-        let alignment = alignment_by_memory_access.max(alignment_by_usage);
-        let aligned_slab_size = round_up(create_info.bytes, alignment as usize);
-        let aligned_allocation_size = aligned_slab_size * create_info.slabs as usize;
-        let initial_data_size = create_info
-            .initial_data
+        let mut enabled_features = ash::vk::PhysicalDeviceFeatures2::default()
+            .features(physical.features.base)
+            .push_next(&mut feature_shader_draw_params)
+            .push_next(&mut feature_descriptor_indexing)
+            .push_next(&mut feature_dynamic_rendering);
+
+        let queue_create_infos = queue_families
             .iter()
-            .map(|data_slice| data_slice.len())
-            .sum::<usize>();
+            .enumerate()
+            .map(|(idx, family_id)| {
+                ash::vk::DeviceQueueCreateInfo::default()
+                    .queue_family_index(*family_id)
+                    .queue_priorities(&queue_priorities[idx..idx + 1])
+            })
+            .collect::<SmallVec<[ash::vk::DeviceQueueCreateInfo; 4]>>();
 
-        assert!(initial_data_size <= aligned_allocation_size);
-
-        //
-        // when creating an immutable buffer add TRANSFER_DST to usage flags
-        let usage_flags = create_info.usage
-            | (if create_info.memory_properties.intersects(memory_host_access) {
-                BufferUsageFlags::empty()
-            } else {
-                BufferUsageFlags::TRANSFER_DST
-            });
-
-        let device = renderer.device_raw();
-        let buffer = unsafe {
-            (*device).create_buffer(
-                &BufferCreateInfo::builder()
-                    .size(aligned_allocation_size as u64)
-                    .usage(usage_flags)
-                    .sharing_mode(SharingMode::EXCLUSIVE),
+        let logical = unsafe {
+            instance.create_device(
+                physical.device,
+                &ash::vk::DeviceCreateInfo::default()
+                    .push_next(&mut enabled_features)
+                    .enabled_extension_names(&[
+                        ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
+                        ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
+                    ])
+                    .queue_create_infos(&queue_create_infos),
                 None,
             )
         }?;
 
-        scopeguard::defer_on_unwind! {
-            unsafe {
-                (*device).destroy_buffer(buffer, None);
-            }
-        }
-
-        create_info
-            .name_tag
-            .map(|name_tag| renderer.debug_set_object_name(buffer, name_tag));
-
-        let buffer_memory = unsafe {
-            let mut memory_requirements = *MemoryRequirements2::builder();
-            (*device).get_buffer_memory_requirements2(
-                &BufferMemoryRequirementsInfo2::builder().buffer(buffer),
-                &mut memory_requirements,
-            );
-
-            (*device).allocate_memory(
-                &MemoryAllocateInfo::builder()
-                    .allocation_size(memory_requirements.memory_requirements.size)
-                    .memory_type_index(choose_memory_heap(
-                        &memory_requirements.memory_requirements,
-                        create_info.memory_properties,
-                        renderer.memory_properties(),
-                    )),
+        let render_state = Self::create_render_state(&physical, &logical, surface)?;
+        let pipeline_cache = unsafe {
+            logical.create_pipeline_cache(&ash::vk::PipelineCacheCreateInfo::default(), None)
+        }?;
+        let null_descriptor_layout = unsafe {
+            logical.create_descriptor_set_layout(
+                &ash::vk::DescriptorSetLayoutCreateInfo::default()
+                    .flags(ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL),
                 None,
             )
         }?;
-        scopeguard::defer_on_unwind! {
-            unsafe {
-                (*device).free_memory(buffer_memory, None);
-            }
-        }
 
-        unsafe { (*device).bind_buffer_memory(buffer, buffer_memory, 0) }?;
+        Ok(VulkanDeviceState {
+            debug: ash::ext::debug_utils::Device::new(instance, &logical),
+            physical,
+            logical,
+            render_state,
+            pipeline_cache,
+            null_descriptor_layout,
+        })
+    }
 
-        if create_info.memory_properties.intersects(memory_host_access) {
-            //
-            // not immutable so just copy everything there is to copy
-            if initial_data_size != 0 {
-                UniqueBufferMapping::map_memory(
-                    renderer.logical(),
-                    buffer_memory,
-                    0,
-                    aligned_allocation_size,
-                )
-                .map(|buffer_mapping| {
-                    let _ =
-                        create_info
-                            .initial_data
-                            .iter()
-                            .fold(0isize, |copy_offset, data| unsafe {
-                                std::ptr::copy_nonoverlapping(
-                                    data.as_ptr(),
-                                    (buffer_mapping.mapped_memory as *mut u8).offset(copy_offset),
-                                    data.len(),
-                                );
-                                copy_offset + data.len() as isize
-                            });
-                })?;
-            }
+    fn create_render_state(
+        physical: &PhysicalDeviceState,
+        logical: &ash::Device,
+        surface: &VulkanSurfaceState,
+    ) -> std::result::Result<RenderState, GraphicsError> {
+        if physical.features.dynamic_rendering {
+            Ok(RenderState::Dynamic {
+                color_attachments: [surface.format.format],
+                depth_attachments: [surface.format.format],
+                stencil_attachments: [surface.format.format],
+            })
         } else {
-            //
-            // immutable buffer, create a staging buffer to use as a copy source then issue a copy command
-            assert!(create_info.work_package.is_some());
+            let attachment_descriptions = [ash::vk::AttachmentDescription::default()
+                .format(surface.format.format)
+                .samples(SampleCountFlags::TYPE_1)
+                .load_op(AttachmentLoadOp::CLEAR)
+                .store_op(AttachmentStoreOp::STORE)
+                .stencil_load_op(AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(AttachmentStoreOp::DONT_CARE)
+                .initial_layout(ImageLayout::UNDEFINED)
+                .final_layout(ImageLayout::PRESENT_SRC_KHR)];
 
-            let (staging_ptr, staging_buffer, staging_offset) =
-                renderer.reserve_staging_memory(aligned_allocation_size);
+            let attachment_refs = [ash::vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)];
 
-            let mut copy_offset = 0isize;
-            let copy_regions = create_info
-                .initial_data
-                .iter()
-                .map(|copy_slice| {
-                    let copy_buffer = *BufferCopy::builder()
-                        .src_offset(staging_offset as DeviceSize + copy_offset as DeviceSize)
-                        .dst_offset(copy_offset as DeviceSize)
-                        .size(copy_slice.len() as DeviceSize);
-                    copy_offset += copy_slice.len() as isize;
-
-                    copy_buffer
-                })
-                .collect::<smallvec::SmallVec<[BufferCopy; 4]>>();
-
-            //
-            // copy data from host to GPU staging buffer
-            let _ = create_info
-                .initial_data
-                .iter()
-                .fold(0isize, |copy_offset, data| unsafe {
-                    std::ptr::copy_nonoverlapping(
-                        data.as_ptr(),
-                        staging_ptr.byte_offset(staging_offset as isize + copy_offset),
-                        data.len(),
-                    );
-                    copy_offset + data.len() as isize
-                });
-
-            //
-            // copy between staging buffer and destination buffer
             unsafe {
-                (*device).cmd_copy_buffer(
-                    create_info.work_package.unwrap().cmd_buffer,
-                    staging_buffer,
-                    buffer,
-                    &copy_regions,
-                );
+                logical.create_render_pass(
+                    &ash::vk::RenderPassCreateInfo::default()
+                        .attachments(&attachment_descriptions)
+                        .subpasses(&[ash::vk::SubpassDescription::default()
+                            .color_attachments(&attachment_refs)
+                            .pipeline_bind_point(PipelineBindPoint::GRAPHICS)]),
+                    None,
+                )
             }
-        }
-
-        let buffer_name = create_info.name_tag.unwrap_or_else(|| "anonymous");
-
-        log::info!(
-            "New buffer {buffer_name} @ {buffer:p} <=> {buffer_memory:p}, alignment {alignment}, 
-            aligned slab size {aligned_slab_size}, aligned allocation size {aligned_allocation_size}"
-        );
-
-        Ok(VulkanBuffer {
-            device,
-            buffer,
-            memory: buffer_memory,
-            slabs: create_info.slabs,
-            aligned_slab_size,
-        })
-    }
-
-    pub fn map_slab<'a>(
-        &self,
-        renderer: &'a VulkanRenderer,
-        slab: u32,
-    ) -> std::result::Result<UniqueBufferMapping<'a>, GraphicsError> {
-        assert!(slab < self.slabs as u32);
-        UniqueBufferMapping::map_memory(
-            renderer.logical(),
-            self.memory,
-            self.aligned_slab_size * slab as usize,
-            self.aligned_slab_size,
-        )
-    }
-}
-
-fn round_up(num_to_round: usize, multiple: usize) -> usize {
-    assert_ne!(multiple, 0);
-    if num_to_round == 0 {
-        0
-    } else {
-        ((num_to_round - 1) / multiple + 1) * multiple
-    }
-}
-
-pub struct UniqueBufferMapping<'a> {
-    buffer_mem: DeviceMemory,
-    mapped_memory: *mut c_void,
-    device: &'a Device,
-    offset: usize,
-    size: usize,
-}
-
-impl<'a> UniqueBufferMapping<'a> {
-    pub fn map_memory(
-        device: &'a ash::Device,
-        device_memory: DeviceMemory,
-        offset: usize,
-        map_size: usize,
-    ) -> std::result::Result<Self, GraphicsError> {
-        let mapped_memory = unsafe {
-            device.map_memory(
-                device_memory,
-                offset as u64,
-                map_size as u64,
-                MemoryMapFlags::empty(),
-            )
-        }?;
-
-        Ok(Self {
-            buffer_mem: device_memory,
-            mapped_memory,
-            device,
-            offset,
-            size: map_size,
-        })
-    }
-
-    pub fn new(
-        buf: &VulkanBuffer,
-        ds: &'a VulkanDeviceState,
-        offset: Option<usize>,
-        size: Option<usize>,
-    ) -> std::result::Result<Self, GraphicsError> {
-        Self::map_memory(
-            &ds.device,
-            buf.memory,
-            offset.unwrap_or(0),
-            size.unwrap_or(ash::vk::WHOLE_SIZE as usize),
-        )
-    }
-
-    pub fn write_data<T: Sized + Copy>(&self, data: &[T]) {
-        unsafe {
-            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
-        }
-    }
-
-    pub fn write_data_with_offset<T: Sized + Copy>(&mut self, data: &[T], offset: isize) {
-        unsafe {
-            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
-            let dst = (dst as *mut T).offset(offset);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
+            .map_err(|e| GraphicsError::from(e))
+            .map(|vk_pass| RenderState::Renderpass(vk_pass))
         }
     }
 }
 
-impl<'a> std::ops::Drop for UniqueBufferMapping<'a> {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = self
-                .device
-                .flush_mapped_memory_ranges(&[*MappedMemoryRange::builder()
-                    .memory(self.buffer_mem)
-                    .offset(self.offset as DeviceSize)
-                    .size(self.size as DeviceSize)]);
-            self.device.unmap_memory(self.buffer_mem);
-        }
+struct QueueState {
+    family_indices: Vec<u32>,
+    handles: Vec<ash::vk::Queue>,
+    cmd_pools: Vec<ash::vk::CommandPool>,
+    pool_locks: Vec<SpinMutex>,
+    queue_locks: Vec<SpinMutex>,
+}
+
+impl QueueState {
+    fn destroy(&mut self, device: &ash::Device) {
+        std::mem::take(&mut self.cmd_pools)
+            .into_iter()
+            .for_each(|cmd_pool| unsafe {
+                device.destroy_command_pool(cmd_pool, None);
+            });
     }
-}
 
-#[derive(Copy, Clone, Debug)]
-#[cfg(target_os = "linux")]
-pub struct WindowSystemIntegration {
-    pub native_disp: *mut std::os::raw::c_void,
-    pub native_win: std::os::raw::c_ulong,
-}
-
-#[derive(Copy, Clone, Debug)]
-#[cfg(target_os = "windows")]
-pub struct WindowSystemIntegration {
-    pub hwnd: isize,
-    pub hinstance: isize,
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum RenderState {
-    Renderpass(ash::vk::RenderPass),
-    Dynamic {
-        color_attachments: [Format; 1],
-        depth_attachments: [Format; 1],
-        stencil_attachments: [Format; 1],
-    },
-}
-
-struct StagingSystem {
-    staging_buffer: ash::vk::Buffer,
-    staging_memory: ash::vk::DeviceMemory,
-    mapped_memory: *mut c_void,
-    free_ptr: std::sync::atomic::AtomicUsize,
-    queued_ownership_transfer: Vec<(Image, u32, u32)>,
-}
-
-impl StagingSystem {
     fn create(
         device: &ash::Device,
-        memory_properties: &PhysicalDeviceMemoryProperties,
-    ) -> Result<StagingSystem, GraphicsError> {
-        const STAGING_BUFFER_SIZE: u32 = 512 * 1024 * 2014;
+        family_indices: &[u32],
+    ) -> std::result::Result<QueueState, GraphicsError> {
+        let cmd_pools: Result<Vec<ash::vk::CommandPool>, GraphicsError> = family_indices
+            .iter()
+            .map(|&family_index| unsafe {
+                device
+                    .create_command_pool(
+                        &ash::vk::CommandPoolCreateInfo::default()
+                            .queue_family_index(family_index)
+                            .flags(
+                                ash::vk::CommandPoolCreateFlags::TRANSIENT
+                                    | ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                            ),
+                        None,
+                    )
+                    .map_err(|e| GraphicsError::from(e))
+            })
+            .collect();
 
-        let staging_buffer = unsafe {
-            device.create_buffer(
-                &BufferCreateInfo::builder()
-                    .usage(BufferUsageFlags::TRANSFER_SRC)
-                    .size(STAGING_BUFFER_SIZE as u64)
-                    .sharing_mode(SharingMode::EXCLUSIVE),
-                None,
-            )
-        }?;
-
-        let mem_req = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
-        let staging_memory = unsafe {
-            device.allocate_memory(
-                &MemoryAllocateInfo::builder()
-                    .allocation_size(mem_req.size)
-                    .memory_type_index(choose_memory_heap(
-                        &mem_req,
-                        MemoryPropertyFlags::HOST_COHERENT,
-                        memory_properties,
-                    )),
-                None,
-            )
-        }?;
-
-        unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0) }?;
-
-        let mapped_memory = unsafe {
-            device.map_memory(
-                staging_memory,
-                0,
-                STAGING_BUFFER_SIZE as ash::vk::DeviceSize,
-                MemoryMapFlags::empty(),
-            )
-        }?;
-
-        Ok(StagingSystem {
-            staging_buffer,
-            staging_memory,
-            mapped_memory,
-            free_ptr: std::sync::atomic::AtomicUsize::new(0),
-            queued_ownership_transfer: vec![],
+        Ok(QueueState {
+            family_indices: Vec::from(family_indices),
+            handles: family_indices
+                .iter()
+                .map(|family_index| unsafe { device.get_device_queue(*family_index, 0) })
+                .collect(),
+            cmd_pools: cmd_pools?,
+            pool_locks: vec![SpinMutex::new(), SpinMutex::new()],
+            queue_locks: vec![SpinMutex::new(), SpinMutex::new()],
         })
     }
+}
+
+pub struct VulkanSurfaceState {
+    pub surface: VulkanSurfaceWithInstance,
+    pub caps: ash::vk::SurfaceCapabilitiesKHR,
+    pub format: ash::vk::SurfaceFormatKHR,
+    pub depth_format: ash::vk::Format,
+    pub present_mode: ash::vk::PresentModeKHR,
+}
+
+pub struct PhysicalDeviceProperties {
+    base: ash::vk::PhysicalDeviceProperties,
+}
+
+pub struct PhysicalDeviceFeatures {
+    base: ash::vk::PhysicalDeviceFeatures,
+    dynamic_rendering: bool,
+}
+
+pub struct PhysicalDeviceState {
+    device: ash::vk::PhysicalDevice,
+    properties: PhysicalDeviceProperties,
+    features: PhysicalDeviceFeatures,
+    memory: ash::vk::PhysicalDeviceMemoryProperties,
+}
+
+pub struct InstanceState {
+    debug_utils_msgr: ash::vk::DebugUtilsMessengerEXT,
+    debug_utils_inst: ash::ext::debug_utils::Instance,
+    handle: ash::Instance,
+    entry: ash::Entry,
+}
+
+impl std::ops::Drop for InstanceState {
+    fn drop(&mut self) {
+        unsafe {
+            self.debug_utils_inst
+                .destroy_debug_utils_messenger(std::mem::take(&mut self.debug_utils_msgr), None);
+            self.handle.destroy_instance(None);
+        }
+    }
+}
+
+impl InstanceState {
+    pub fn create() -> std::result::Result<InstanceState, GraphicsError> {
+        let entry = ash::Entry::linked();
+        let instance_ver = unsafe { entry.try_enumerate_instance_version() }?;
+
+        log::info!(
+            "Vulkan version: {}.{}.{}",
+            instance_ver.map_or(1, |instance_ver| {
+                ash::vk::api_version_major(instance_ver)
+            },),
+            instance_ver.map_or(0, |instance_ver| {
+                ash::vk::api_version_minor(instance_ver)
+            },),
+            instance_ver.map_or(0, |instance_ver| {
+                ash::vk::api_version_patch(instance_ver)
+            },)
+        );
+
+        unsafe {
+            log::info!("Instance extensions:");
+            let _ = entry
+                .enumerate_instance_extension_properties(None)
+                .map(|instance_exts| {
+                    instance_exts.iter().for_each(|ext| {
+                        let ext_name = std::ffi::CStr::from_ptr(ext.extension_name.as_ptr())
+                            .to_str()
+                            .unwrap();
+                        log::info!("{ext_name}");
+                    });
+                });
+        }
+
+        let mut debug_utils_msg_create_info = ash::vk::DebugUtilsMessengerCreateInfoEXT::default()
+            .message_severity(
+                DebugUtilsMessageSeverityFlagsEXT::ERROR
+                    | DebugUtilsMessageSeverityFlagsEXT::INFO
+                    | DebugUtilsMessageSeverityFlagsEXT::WARNING,
+            )
+            .message_type(
+                DebugUtilsMessageTypeFlagsEXT::GENERAL
+                    | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+                    | DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+            )
+            .pfn_user_callback(Some(debug_callback_stub));
+
+        let app_name_engine = [
+            CString::new("Vulkan + Rust adventures").unwrap(),
+            CString::new("Epic engine").unwrap(),
+        ];
+
+        let app_create_info = ash::vk::ApplicationInfo::default()
+            .api_version(ash::vk::make_api_version(0, 1, 3, 0))
+            .application_name(app_name_engine[0].as_c_str())
+            .application_version(1)
+            .engine_name(app_name_engine[1].as_c_str())
+            .engine_version(1);
+
+        // let validation_layer_name: CString = CString::new("VK_LAYER_KHRONOS_validation").unwrap();
+
+        let enabled_layers = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const std::ffi::c_char];
+
+        let enabled_instance_extensions = [
+            ash::vk::KHR_SURFACE_NAME.as_ptr(),
+            #[cfg(target_os = "linux")]
+            ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
+            #[cfg(target_os = "windows")]
+            ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr(),
+            ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
+        ];
+
+        let instance = unsafe {
+            entry.create_instance(
+                &ash::vk::InstanceCreateInfo::default()
+                    .application_info(&app_create_info)
+                    .push_next(&mut debug_utils_msg_create_info)
+                    .enabled_layer_names(&enabled_layers)
+                    .enabled_extension_names(&enabled_instance_extensions),
+                None,
+            )
+        }
+        .expect("Failed to create instance");
+
+        let (debug_utils_inst, debug_utils_msgr) = unsafe {
+            let debug_utils_inst = ash::ext::debug_utils::Instance::new(&entry, &instance);
+            let debug_utils_msgr = debug_utils_inst
+                .create_debug_utils_messenger(&debug_utils_msg_create_info, None)?;
+
+            (debug_utils_inst, debug_utils_msgr)
+        };
+
+        Ok(InstanceState {
+            debug_utils_msgr,
+            debug_utils_inst,
+            handle: instance,
+            entry,
+        })
+    }
+}
+
+unsafe extern "system" fn debug_callback_stub(
+    message_severity: ash::vk::DebugUtilsMessageSeverityFlagsEXT,
+    _message_types: ash::vk::DebugUtilsMessageTypeFlagsEXT,
+    p_callback_data: *const ash::vk::DebugUtilsMessengerCallbackDataEXT,
+    _p_user_data: *mut std::os::raw::c_void,
+) -> ash::vk::Bool32 {
+    if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::INFO) {
+        log::info!(
+            "{}",
+            std::ffi::CStr::from_ptr((*p_callback_data).p_message)
+                .to_str()
+                .unwrap_or_else(|_| "unknown")
+        );
+    }
+
+    if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::WARNING) {
+        log::warn!(
+            "{}",
+            std::ffi::CStr::from_ptr((*p_callback_data).p_message)
+                .to_str()
+                .unwrap_or_else(|_| "unknown")
+        );
+    }
+
+    if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::ERROR) {
+        log::error!(
+            "{}",
+            std::ffi::CStr::from_ptr((*p_callback_data).p_message)
+                .to_str()
+                .unwrap_or_else(|_| "unknown")
+        );
+    }
+
+    ash::vk::FALSE
 }
 
 pub struct VulkanRenderer {
-    staging_sys: StagingSystem,
-    pub renderstate: RenderState,
-    pub swapchain: VulkanSwapchainState,
-    pub device_state: VulkanDeviceState,
-    pub msgr: DebugUtilsMessengerEXT,
-    pub dbg: DebugUtils,
-    pub instance: Instance,
-    pub entry: Entry,
+    staging_system: StagingSystem,
+    presentation_state: PresentationState,
+    queue_state: QueueState,
+    device_state: VulkanDeviceState,
+    surface_state: VulkanSurfaceState,
+    instance: InstanceState,
 }
 
 unsafe impl Send for VulkanRenderer {}
 unsafe impl Sync for VulkanRenderer {}
 
-pub struct QueueSubmitWaitToken {
-    pub cmd_buffer: ash::vk::CommandBuffer,
-    wait_fence: ash::vk::Fence,
-    queue_type: QueueType,
-}
-
-pub struct QueuedJob {
-    pub cmd_buffer: ash::vk::CommandBuffer,
-    pub queue_type: QueueType,
+impl std::ops::Drop for VulkanRenderer {
+    fn drop(&mut self) {
+        self.staging_system.destroy(&self.device_state.logical);
+        self.presentation_state.destroy(&self.device_state.logical);
+        self.queue_state.destroy(&self.device_state.logical);
+    }
 }
 
 impl VulkanRenderer {
-    pub fn queue_ownership_transfer(&mut self, img: &BindlessImageResourceHandleEntryPair) {
-        self.staging_sys.queued_ownership_transfer.push((
-            img.1.image,
-            img.1.info.level_count,
-            img.1.info.layer_count,
-        ));
+    pub fn create(
+        wsi: WindowSystemIntegration,
+        screen_size: (u32, u32),
+    ) -> std::result::Result<VulkanRenderer, GraphicsError> {
+        let instance = InstanceState::create()?;
+        let surface_state = create_surface(&instance.entry, &instance.handle, wsi)?;
+
+        let (phys_device_state, extra_data) =
+            pick_device(&instance.handle, &surface_state.ext, surface_state.surface)?;
+
+        let surface_state = VulkanSurfaceState {
+            surface: surface_state,
+            caps: extra_data.surface_caps,
+            format: extra_data.surface_format,
+            present_mode: extra_data.presentation_mode,
+            depth_format: extra_data.depth_stencil_format,
+        };
+
+        let device_state = VulkanDeviceState::create(
+            &instance.handle,
+            phys_device_state,
+            &surface_state,
+            &[
+                extra_data.queue_family_graphics,
+                extra_data.queue_family_transfer,
+            ],
+            &[1.0, 1.0],
+        )?;
+        let queue_state = QueueState::create(
+            &device_state.logical,
+            &[
+                extra_data.queue_family_graphics,
+                extra_data.queue_family_transfer,
+            ],
+        )?;
+
+        let swapchain_image_count = (((extra_data.surface_caps.min_image_count as f32) * 1.5f32)
+            as u32)
+            .min(extra_data.surface_caps.max_image_count);
+        let swapchain_ext =
+            ash::khr::swapchain::Device::new(&instance.handle, &device_state.logical);
+        let swapchain_state = VulkanSwapchainState::create(
+            &swapchain_ext,
+            None,
+            &surface_state,
+            &device_state.logical,
+            &device_state.physical.memory,
+            device_state.render_state,
+            swapchain_image_count,
+        )?;
+        let presentation_state = PresentationState::create(
+            &device_state.logical,
+            swapchain_ext,
+            swapchain_state,
+            swapchain_image_count,
+        )?;
+
+        let staging_system =
+            StagingSystem::create(&device_state.logical, &device_state.physical.memory)?;
+
+        Ok(VulkanRenderer {
+            instance,
+            surface_state,
+            device_state,
+            queue_state,
+            presentation_state,
+            staging_system,
+        })
     }
 
-    fn do_image_ownership_transfers(&mut self, cmd_buf: CommandBuffer) {
-        if self.staging_sys.queued_ownership_transfer.is_empty() {
-            return;
-        }
+    pub fn logical(&self) -> &ash::Device {
+        &self.device_state.logical
+    }
 
-        let (qid_graphics, _, _, _, _) = self.device_state.queue_data(QueueType::Graphics);
-        let (qid_transfer, _, _, _, _) = self.device_state.queue_data(QueueType::Transfer);
+    pub fn logical_raw(&self) -> *const ash::Device {
+        &self.device_state.logical as *const _
+    }
 
-        let memory_barriers: SmallVec<[ImageMemoryBarrier2; 4]> = self
-            .staging_sys
-            .queued_ownership_transfer
-            .drain(..)
-            .map(|(image, levels, layers)| {
-                *ImageMemoryBarrier2::builder()
-                    .image(image)
-                    .dst_stage_mask(PipelineStageFlags2::ALL_GRAPHICS)
-                    .dst_access_mask(AccessFlags2::SHADER_READ)
-                    .src_queue_family_index(qid_transfer)
-                    .dst_queue_family_index(qid_graphics)
-                    .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                    .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                    .subresource_range(
-                        *ImageSubresourceRange::builder()
-                            .aspect_mask(ImageAspectFlags::COLOR)
-                            .base_mip_level(0)
-                            .level_count(levels)
-                            .base_array_layer(0)
-                            .layer_count(layers),
-                    )
-            })
-            .collect();
+    pub fn physical(&self) -> ash::vk::PhysicalDevice {
+        self.device_state.physical.device
+    }
 
-        unsafe {
-            self.logical().cmd_pipeline_barrier2(
-                cmd_buf,
-                &DependencyInfo::builder()
-                    .dependency_flags(DependencyFlags::BY_REGION)
-                    .image_memory_barriers(&memory_barriers),
-            );
-        }
+    pub fn queue_data(
+        &self,
+        q: QueueType,
+    ) -> (
+        u32,
+        ash::vk::Queue,
+        ash::vk::CommandPool,
+        &SpinMutex,
+        &SpinMutex,
+    ) {
+        (
+            self.queue_state.family_indices[q as usize],
+            self.queue_state.handles[q as usize],
+            self.queue_state.cmd_pools[q as usize],
+            &self.queue_state.pool_locks[q as usize],
+            &self.queue_state.queue_locks[q as usize],
+        )
     }
 
     pub fn consume_wait_token(&mut self, token: QueueSubmitWaitToken) {
@@ -721,7 +589,7 @@ impl VulkanRenderer {
             self.logical().destroy_fence(token.wait_fence, None);
         }
 
-        let (_, _, cmd_pool, pool_lock, _) = self.device_state.queue_data(token.queue_type);
+        let (_, _, cmd_pool, pool_lock, _) = self.queue_data(token.queue_type);
         let _ = pool_lock.lock();
         unsafe {
             self.logical()
@@ -731,24 +599,24 @@ impl VulkanRenderer {
 
     pub fn choose_memory_heap(
         &self,
-        memory_req: &MemoryRequirements,
+        memory_req: &ash::vk::MemoryRequirements,
         memory_properties: MemoryPropertyFlags,
     ) -> u32 {
         choose_memory_heap(
             memory_req,
             memory_properties,
-            &self.device_state.physical.memory_properties,
+            &self.device_state.physical.memory,
         )
     }
 
     pub fn create_queue_job(&self, qtype: QueueType) -> Result<QueuedJob, GraphicsError> {
-        let (_, _, cmd_pool, pool_lock, _) = self.device_state.queue_data(qtype);
+        let (_, _, cmd_pool, pool_lock, _) = self.queue_data(qtype);
         let command_buffer = {
             let _ = pool_lock.lock();
             unsafe {
-                let cmd_buffers = self.device_state.device.allocate_command_buffers(
-                    &CommandBufferAllocateInfo::builder()
-                        .level(CommandBufferLevel::PRIMARY)
+                let cmd_buffers = self.logical().allocate_command_buffers(
+                    &ash::vk::CommandBufferAllocateInfo::default()
+                        .level(ash::vk::CommandBufferLevel::PRIMARY)
                         .command_buffer_count(1)
                         .command_pool(cmd_pool),
                 )?;
@@ -762,9 +630,10 @@ impl VulkanRenderer {
         }
 
         unsafe {
-            self.device_state.device.begin_command_buffer(
+            self.logical().begin_command_buffer(
                 command_buffer,
-                &CommandBufferBeginInfo::builder().flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                &ash::vk::CommandBufferBeginInfo::default()
+                    .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
             )?;
         }
 
@@ -775,30 +644,29 @@ impl VulkanRenderer {
     }
 
     pub fn submit_queue_job(&self, job: QueuedJob) -> Result<QueueSubmitWaitToken, GraphicsError> {
-        let (_, queue, cmd_pool, pool_lock, queue_lock) =
-            self.device_state.queue_data(job.queue_type);
+        let (_, queue, cmd_pool, pool_lock, queue_lock) = self.queue_data(job.queue_type);
 
         let wait_fence = unsafe {
             self.device_state
-                .device
+                .logical
                 .end_command_buffer(job.cmd_buffer)?;
             self.device_state
-                .device
-                .create_fence(&FenceCreateInfo::builder(), None)
+                .logical
+                .create_fence(&ash::vk::FenceCreateInfo::default(), None)
         }?;
 
         scopeguard::defer_on_unwind! {
             unsafe {
-                self.device_state.device.destroy_fence(wait_fence, None);
+                self.device_state.logical.destroy_fence(wait_fence, None);
                 let _ = pool_lock.lock();
-                self.device_state.device.free_command_buffers(cmd_pool, &[job.cmd_buffer]);
+                self.device_state.logical.free_command_buffers(cmd_pool, &[job.cmd_buffer]);
             }
         }
 
         unsafe {
-            self.device_state.device.queue_submit(
+            self.device_state.logical.queue_submit(
                 queue,
-                &[*SubmitInfo::builder().command_buffers(&[job.cmd_buffer])],
+                &[ash::vk::SubmitInfo::default().command_buffers(&[job.cmd_buffer])],
                 wait_fence,
             )?;
         }
@@ -812,171 +680,37 @@ impl VulkanRenderer {
 
     pub fn reserve_staging_memory(&self, bytes: usize) -> (*mut u8, ash::vk::Buffer, usize) {
         let byte_offset = self
-            .staging_sys
+            .staging_system
             .free_ptr
             .fetch_add(bytes, std::sync::atomic::Ordering::Acquire);
 
         (
             unsafe {
-                (self.staging_sys.mapped_memory as *mut u8).byte_offset(byte_offset as isize)
+                (self.staging_system.mapped_memory as *mut u8).byte_offset(byte_offset as isize)
             },
-            self.staging_sys.staging_buffer,
+            self.staging_system.staging_buffer,
             byte_offset,
         )
     }
 
-    pub fn setup(&self) -> (u32,) {
-        (self.swapchain.max_frames,)
-    }
     pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
-        &self.device_state.physical.properties.base.properties.limits
+        &self.device_state.physical.properties.base.limits
     }
 
-    pub fn memory_properties(&self) -> &PhysicalDeviceMemoryProperties {
-        &self.device_state.physical.memory_properties
+    pub fn memory_properties(&self) -> &ash::vk::PhysicalDeviceMemoryProperties {
+        &self.device_state.physical.memory
     }
 
-    pub fn features(&self) -> &PhysicalDeviceFeatures {
-        &self.device_state.physical.features.base.features
+    pub fn features(&self) -> &ash::vk::PhysicalDeviceFeatures {
+        &self.device_state.physical.features.base
     }
 
     pub fn empty_descriptor_set_layout(&self) -> DescriptorSetLayout {
-        self.device_state.empty_descriptor_layout
+        self.device_state.null_descriptor_layout
     }
 
-    pub fn pipeline_cache(&self) -> PipelineCache {
-        self.device_state.pipeline_cache
-    }
-
-    pub fn device_raw(&self) -> *const ash::Device {
-        &self.device_state.device as *const _
-    }
-
-    pub fn wait_all_idle(&mut self) {
-        unsafe {
-            // self.device_state
-            //     .device
-            //     .queue_wait_idle(self.device_state.queue)
-            //     .expect("Failed to wait for idle queue");
-            self.device_state
-                .device
-                .device_wait_idle()
-                .expect("Failed to wait for device idle");
-        }
-    }
-
-    // pub fn copy_pixels_to_image(
-    //     &mut self,
-    //     img: &UniqueImage,
-    //     pixels: &[u8],
-    //     image_info: &ImageCreateInfo,
-    // ) {
-    //     let work_buffer = UniqueBuffer::new::<u8>(
-    //         self,
-    //         BufferUsageFlags::STORAGE_BUFFER | BufferUsageFlags::TRANSFER_SRC,
-    //         MemoryPropertyFlags::HOST_VISIBLE,
-    //         pixels.len(),
-    //     );
-    //
-    //     UniqueBufferMapping::new(&work_buffer, &self.device_state, None, None).write_data(pixels);
-    //
-    //     let img_subresource_range = *ImageSubresourceRange::builder()
-    //         .aspect_mask(ImageAspectFlags::COLOR)
-    //         .layer_count(image_info.array_layers)
-    //         .base_array_layer(0)
-    //         .level_count(image_info.mip_levels)
-    //         .base_mip_level(0);
-    //
-    //     //
-    //     // transition image layout from undefined -> transfer src
-    //     unsafe {
-    //         self.device_state.device.cmd_pipeline_barrier(
-    //             self.resource_loader.cmd_buf,
-    //             PipelineStageFlags::TOP_OF_PIPE,
-    //             PipelineStageFlags::TRANSFER,
-    //             DependencyFlags::empty(),
-    //             &[],
-    //             &[],
-    //             &[*ImageMemoryBarrier::builder()
-    //                 .src_access_mask(AccessFlags::NONE)
-    //                 .dst_access_mask(AccessFlags::TRANSFER_WRITE)
-    //                 .image(img.image)
-    //                 .old_layout(ImageLayout::UNDEFINED)
-    //                 .new_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-    //                 .subresource_range(img_subresource_range)],
-    //         );
-    //     }
-    //
-    //     //
-    //     // copy pixels
-    //     unsafe {
-    //         self.device_state.device.cmd_copy_buffer_to_image(
-    //             self.resource_loader.cmd_buf,
-    //             work_buffer.handle,
-    //             img.image,
-    //             ImageLayout::TRANSFER_DST_OPTIMAL,
-    //             &[*BufferImageCopy::builder()
-    //                 .buffer_offset(0)
-    //                 .image_subresource(
-    //                     *ImageSubresourceLayers::builder()
-    //                         .aspect_mask(ImageAspectFlags::COLOR)
-    //                         .base_array_layer(0)
-    //                         .layer_count(image_info.array_layers)
-    //                         .mip_level(0),
-    //                 )
-    //                 .image_extent(image_info.extent)],
-    //         );
-    //     }
-    //
-    //     //
-    //     // transition layout from transfer -> shader readonly optimal
-    //     unsafe {
-    //         self.device_state.device.cmd_pipeline_barrier(
-    //             self.resource_loader.cmd_buf,
-    //             PipelineStageFlags::TRANSFER,
-    //             PipelineStageFlags::FRAGMENT_SHADER,
-    //             DependencyFlags::empty(),
-    //             &[],
-    //             &[],
-    //             &[*ImageMemoryBarrier::builder()
-    //                 .src_access_mask(AccessFlags::MEMORY_READ)
-    //                 .dst_access_mask(AccessFlags::MEMORY_WRITE)
-    //                 .image(img.image)
-    //                 .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-    //                 .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-    //                 .subresource_range(img_subresource_range)],
-    //         );
-    //     }
-    //
-    //     self.resource_loader.work_buffers.push(work_buffer);
-    // }
-
-    pub fn pipeline_render_create_info(&self) -> Option<PipelineRenderingCreateInfo> {
-        match self.renderstate {
-            RenderState::Dynamic {
-                ref color_attachments,
-                depth_attachments,
-                stencil_attachments,
-            } => Some(
-                *PipelineRenderingCreateInfo::builder()
-                    .color_attachment_formats(color_attachments)
-                    .depth_attachment_format(depth_attachments[0])
-                    .stencil_attachment_format(stencil_attachments[0]),
-            ),
-            RenderState::Renderpass(_) => None,
-        }
-    }
-
-    pub fn logical(&self) -> &ash::Device {
-        &self.device_state.device
-    }
-
-    pub fn logical_raw(&self) -> *const ash::Device {
-        &self.device_state.device as *const _
-    }
-
-    pub fn physical(&self) -> ash::vk::PhysicalDevice {
-        self.device_state.physical.device
+    pub fn render_state(&self) -> RenderState {
+        self.device_state.render_state
     }
 
     pub fn debug_set_object_name<T: VkObjectType + ash::vk::Handle>(
@@ -985,21 +719,19 @@ impl VulkanRenderer {
         name: &str,
     ) {
         let _ = unsafe {
-            self.dbg.set_debug_utils_object_name(
-                self.logical().handle(),
-                &ash::vk::DebugUtilsObjectNameInfoEXT::builder()
-                    .object_handle(vkobject.as_raw())
-                    .object_name(&std::ffi::CString::new(name).unwrap())
-                    .object_type(T::object_type()),
+            self.device_state.debug.set_debug_utils_object_name(
+                &ash::vk::DebugUtilsObjectNameInfoEXT::default()
+                    .object_handle(vkobject)
+                    .object_name(&std::ffi::CString::new(name).unwrap()),
             )
         };
     }
 
     pub fn debug_marker_begin(&self, cmd_buf: CommandBuffer, name: &str, color: [f32; 4]) {
         let _ = unsafe {
-            self.dbg.cmd_begin_debug_utils_label(
+            self.device_state.debug.cmd_begin_debug_utils_label(
                 cmd_buf,
-                &DebugUtilsLabelEXT::builder()
+                &ash::vk::DebugUtilsLabelEXT::default()
                     .label_name(&std::ffi::CString::new(name).unwrap())
                     .color(color),
             )
@@ -1008,9 +740,9 @@ impl VulkanRenderer {
 
     pub fn debug_insert_label(&self, cmd_buf: CommandBuffer, name: &str, color: [f32; 4]) {
         let _ = unsafe {
-            self.dbg.cmd_insert_debug_utils_label(
+            self.device_state.debug.cmd_insert_debug_utils_label(
                 cmd_buf,
-                &DebugUtilsLabelEXT::builder()
+                &ash::vk::DebugUtilsLabelEXT::default()
                     .label_name(&std::ffi::CString::new(name).unwrap())
                     .color(color),
             )
@@ -1018,16 +750,16 @@ impl VulkanRenderer {
     }
 
     pub fn debug_marker_end(&self, cmd_buf: CommandBuffer) {
-        let _ = unsafe { self.dbg.cmd_end_debug_utils_label(cmd_buf) };
+        let _ = unsafe { self.device_state.debug.cmd_end_debug_utils_label(cmd_buf) };
     }
 
     pub fn debug_queue_begin_label(&self, name: &str, color: [f32; 4]) {
-        let (_, queue, _, _, _) = self.device_state.queue_data(QueueType::Graphics);
+        let (_, queue, _, _, _) = self.queue_data(QueueType::Graphics);
 
         let _ = unsafe {
-            self.dbg.queue_begin_debug_utils_label(
+            self.device_state.debug.queue_begin_debug_utils_label(
                 queue,
-                &DebugUtilsLabelEXT::builder()
+                &ash::vk::DebugUtilsLabelEXT::default()
                     .label_name(&std::ffi::CString::new(name).unwrap())
                     .color(color),
             )
@@ -1035,1214 +767,66 @@ impl VulkanRenderer {
     }
 
     pub fn debug_queue_end_label(&self) {
-        let (_, queue, _, _, _) = self.device_state.queue_data(QueueType::Graphics);
-        let _ = unsafe { self.dbg.queue_end_debug_utils_label(queue) };
+        let (_, queue, _, _, _) = self.queue_data(QueueType::Graphics);
+        let _ = unsafe { self.device_state.debug.queue_end_debug_utils_label(queue) };
     }
 
-    pub fn debug_queue_insert_label(&self, queue: Queue, name: &str, color: [f32; 4]) {
-        // let (_, queue, _) = self.device_state.queue_data(QueueType::Graphics);
+    pub fn debug_queue_insert_label(&self, queue: ash::vk::Queue, name: &str, color: [f32; 4]) {
         let _ = unsafe {
-            self.dbg.queue_insert_debug_utils_label(
+            self.device_state.debug.queue_insert_debug_utils_label(
                 queue,
-                &ash::vk::DebugUtilsLabelEXT::builder()
+                &ash::vk::DebugUtilsLabelEXT::default()
                     .label_name(&std::ffi::CString::new(name).unwrap())
                     .color(color),
             )
         };
     }
-}
 
-pub struct VulkanRenderer_DebugQueueScope {
-    logical: *const VulkanRenderer,
-}
-
-impl VulkanRenderer_DebugQueueScope {
-    pub fn begin(renderer: &VulkanRenderer, name: &str, color: [f32; 4]) -> Self {
-        renderer.debug_queue_begin_label(name, color);
-        Self {
-            logical: renderer as *const _,
-        }
-    }
-}
-
-impl std::ops::Drop for VulkanRenderer_DebugQueueScope {
-    fn drop(&mut self) {
-        unsafe {
-            (*self.logical).debug_queue_end_label();
-        }
-    }
-}
-
-pub struct VulkanRenderer_DebugMarkerScope {
-    renderer: *const VulkanRenderer,
-    cmd_buffer: CommandBuffer,
-}
-
-impl VulkanRenderer_DebugMarkerScope {
-    pub fn begin(
-        renderer: &VulkanRenderer,
-        cmd_buffer: CommandBuffer,
-        name: &str,
-        color: [f32; 4],
-    ) -> Self {
-        renderer.debug_marker_begin(cmd_buffer, name, color);
-        Self {
-            renderer: renderer as *const _,
-            cmd_buffer,
-        }
-    }
-}
-
-impl std::ops::Drop for VulkanRenderer_DebugMarkerScope {
-    fn drop(&mut self) {
-        unsafe {
-            (*self.renderer).debug_marker_end(self.cmd_buffer);
-        }
-    }
-}
-
-impl std::ops::Drop for VulkanRenderer {
-    fn drop(&mut self) {
-        unsafe {
-            self.device_state
-                .device
-                .unmap_memory(self.staging_sys.staging_memory);
-            self.device_state
-                .device
-                .free_memory(self.staging_sys.staging_memory, None);
-            self.device_state
-                .device
-                .destroy_buffer(self.staging_sys.staging_buffer, None);
-        }
-    }
-}
-
-pub struct DeviceProperties {
-    pub base: PhysicalDeviceProperties2,
-    pub vk11: PhysicalDeviceVulkan11Properties,
-    pub vk12: PhysicalDeviceVulkan12Properties,
-    pub vk13: PhysicalDeviceVulkan13Properties,
-}
-
-pub struct DeviceFeatures {
-    pub base: PhysicalDeviceFeatures2,
-    pub vk11: PhysicalDeviceVulkan11Features,
-    pub vk12: PhysicalDeviceVulkan12Features,
-    pub vk13: PhysicalDeviceVulkan13Features,
-}
-
-pub struct VulkanPhysicalDeviceState {
-    pub device: PhysicalDevice,
-    pub properties: DeviceProperties,
-    pub memory_properties: PhysicalDeviceMemoryProperties,
-    pub features: DeviceFeatures,
-}
-
-#[derive(Copy, Clone, Debug)]
-#[repr(u8)]
-pub enum QueueType {
-    Graphics,
-    Transfer,
-}
-
-pub struct QueueData {
-    pub families: [u32; 2],
-    pub queues: [ash::vk::Queue; 2],
-    pub cmdpools: [ash::vk::CommandPool; 2],
-    pub pool_locks: [SpinMutex; 2],
-    pub queue_locks: [SpinMutex; 2],
-}
-
-pub struct VulkanDeviceState {
-    pub pipeline_cache: PipelineCache,
-    pub empty_descriptor_layout: DescriptorSetLayout,
-    pub device: ash::Device,
-    pub surface: VulkanSurfaceState,
-    pub physical: VulkanPhysicalDeviceState,
-    pub queues: QueueData,
-}
-
-impl std::ops::Drop for VulkanDeviceState {
-    fn drop(&mut self) {
-        unsafe {
-            self.device
-                .destroy_descriptor_set_layout(self.empty_descriptor_layout, None);
-            self.device
-                .destroy_pipeline_cache(self.pipeline_cache, None);
-        }
-    }
-}
-
-impl VulkanDeviceState {
-    pub fn queue_data(
-        &self,
-        q: QueueType,
-    ) -> (
-        u32,
-        ash::vk::Queue,
-        ash::vk::CommandPool,
-        &SpinMutex,
-        &SpinMutex,
-    ) {
-        (
-            self.queues.families[q as usize],
-            self.queues.queues[q as usize],
-            self.queues.cmdpools[q as usize],
-            &self.queues.pool_locks[q as usize],
-            &self.queues.queue_locks[q as usize],
-        )
-    }
-}
-
-pub struct VulkanSurfaceKHRState {
-    pub ext: ash::extensions::khr::Surface,
-    pub surface: SurfaceKHR,
-}
-
-pub struct VulkanSurfaceState {
-    pub khr: VulkanSurfaceKHRState,
-    pub caps: ash::vk::SurfaceCapabilitiesKHR,
-    pub fmt: SurfaceFormatKHR,
-    pub present_mode: PresentModeKHR,
-    pub depth_fmt: ash::vk::Format,
-}
-
-pub struct VulkanSwapchainState {
-    pub ext: ash::extensions::khr::Swapchain,
-    pub swapchain: ash::vk::SwapchainKHR,
-    pub images: Vec<Image>,
-    pub image_views: Vec<ImageView>,
-    pub framebuffers: Vec<Framebuffer>,
-    pub depth_stencil: Vec<(Image, DeviceMemory)>,
-    pub depth_stencil_views: Vec<ImageView>,
-    pub work_fences: Vec<Fence>,
-    pub sem_work_done: Vec<Semaphore>,
-    pub sem_img_available: Vec<Semaphore>,
-    pub cmd_buffers: Vec<CommandBuffer>,
-    pub frame_index: u32,
-    pub max_frames: u32,
-}
-
-impl VulkanSwapchainState {
-    pub fn create_swapchain(
-        ext: &ash::extensions::khr::Swapchain,
-        previous_swapchain: Option<SwapchainKHR>,
-        surface: &VulkanSurfaceState,
-        device: &Device,
-        physical: &VulkanPhysicalDeviceState,
-        renderstate: RenderState,
-        queue: u32,
-    ) -> (
-        SwapchainKHR,
-        Vec<Image>,
-        Vec<ImageView>,
-        Vec<Framebuffer>,
-        Vec<(Image, DeviceMemory)>,
-        Vec<ImageView>,
-    ) {
-        let swapchain = unsafe {
-            ext.create_swapchain(
-                &SwapchainCreateInfoKHR::builder()
-                    .surface(surface.khr.surface)
-                    .min_image_count(surface.caps.max_image_count)
-                    .image_format(surface.fmt.format)
-                    .image_color_space(surface.fmt.color_space)
-                    .image_extent(surface.caps.current_extent)
-                    .image_array_layers(1)
-                    .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
-                    .image_sharing_mode(SharingMode::EXCLUSIVE)
-                    .queue_family_indices(&[queue])
-                    .composite_alpha(CompositeAlphaFlagsKHR::OPAQUE)
-                    .pre_transform(surface.caps.current_transform)
-                    .old_swapchain(previous_swapchain.unwrap_or_else(|| SwapchainKHR::null()))
-                    .present_mode(surface.present_mode),
-                None,
-            )
-            .expect("Failed to create swapchain!")
-        };
-
-        let images = unsafe { ext.get_swapchain_images(swapchain) }
-            .expect("Failed to get swapchain images ...");
-
-        let image_views = images
-            .iter()
-            .map(|img| unsafe {
-                device
-                    .create_image_view(
-                        &ImageViewCreateInfo::builder()
-                            .image(*img)
-                            .view_type(ImageViewType::TYPE_2D)
-                            .format(surface.fmt.format)
-                            .components(
-                                *ComponentMapping::builder()
-                                    .r(ComponentSwizzle::IDENTITY)
-                                    .g(ComponentSwizzle::IDENTITY)
-                                    .b(ComponentSwizzle::IDENTITY)
-                                    .a(ComponentSwizzle::IDENTITY),
-                            )
-                            .subresource_range(
-                                *ImageSubresourceRange::builder()
-                                    .aspect_mask(ImageAspectFlags::COLOR)
-                                    .base_mip_level(0)
-                                    .level_count(1)
-                                    .base_array_layer(0)
-                                    .layer_count(1),
-                            ),
-                        None,
-                    )
-                    .expect("Failed to create imageview for swapchain image")
-            })
-            .collect::<Vec<_>>();
-
-        let framebuffers = match renderstate {
-            RenderState::Dynamic { .. } => vec![],
-            RenderState::Renderpass(pass) => image_views
-                .iter()
-                .map(|&img_view| {
-                    unsafe {
-                        device.create_framebuffer(
-                            &FramebufferCreateInfo::builder()
-                                .render_pass(pass)
-                                .attachments(&[img_view])
-                                .width(surface.caps.current_extent.width)
-                                .height(surface.caps.current_extent.height)
-                                .layers(1),
-                            None,
-                        )
-                    }
-                    .expect("Failed to create framebuffer")
-                })
-                .collect::<Vec<_>>(),
-        };
-
-        //
-        // create depth stencil images and image views
-        let depth_stencil_images = image_views
-            .iter()
-            .map(|_| {
-                let depth_stencil_image = unsafe {
-                    device.create_image(
-                        &ImageCreateInfo::builder()
-                            .image_type(ImageType::TYPE_2D)
-                            .format(surface.depth_fmt)
-                            .extent(Extent3D {
-                                width: surface.caps.current_extent.width,
-                                height: surface.caps.current_extent.height,
-                                depth: 1,
-                            })
-                            .mip_levels(1)
-                            .array_layers(1)
-                            .samples(SampleCountFlags::TYPE_1)
-                            .tiling(ImageTiling::OPTIMAL)
-                            .usage(ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-                            .sharing_mode(SharingMode::EXCLUSIVE)
-                            .initial_layout(ImageLayout::UNDEFINED),
-                        None,
-                    )
-                }
-                .expect("Failed to create depth stencil image");
-
-                let image_mem_req =
-                    unsafe { device.get_image_memory_requirements(depth_stencil_image) };
-
-                let depth_stencil_memory = unsafe {
-                    device.allocate_memory(
-                        &MemoryAllocateInfo::builder()
-                            .allocation_size(image_mem_req.size)
-                            .memory_type_index(choose_memory_heap(
-                                &image_mem_req,
-                                MemoryPropertyFlags::DEVICE_LOCAL,
-                                &physical.memory_properties,
-                            )),
-                        None,
-                    )
-                }
-                .expect("Depth stencil image memory allocation failed");
-
-                unsafe { device.bind_image_memory(depth_stencil_image, depth_stencil_memory, 0) }
-                    .expect("Failed to bind memory to image");
-
-                (depth_stencil_image, depth_stencil_memory)
-            })
-            .collect::<Vec<_>>();
-
-        let depth_stencil_imageviews = depth_stencil_images
-            .iter()
-            .map(|&(image, _)| unsafe {
-                device
-                    .create_image_view(
-                        &ImageViewCreateInfo::builder()
-                            .image(image)
-                            .view_type(ImageViewType::TYPE_2D)
-                            .format(surface.depth_fmt)
-                            .components(*ComponentMapping::builder())
-                            .subresource_range(
-                                *ImageSubresourceRange::builder()
-                                    .aspect_mask(
-                                        ImageAspectFlags::DEPTH | ImageAspectFlags::STENCIL,
-                                    )
-                                    .base_mip_level(0)
-                                    .level_count(1)
-                                    .base_array_layer(0)
-                                    .layer_count(1),
-                            ),
-                        None,
-                    )
-                    .expect("Failed to create depth stencil image view")
-            })
-            .collect::<Vec<_>>();
-
-        (
-            swapchain,
-            images,
-            image_views,
-            framebuffers,
-            depth_stencil_images,
-            depth_stencil_imageviews,
-        )
-    }
-
-    fn create_sync_objects(
-        device: &Device,
-        frames: u32,
-    ) -> (Vec<Fence>, Vec<Semaphore>, Vec<Semaphore>) {
-        let work_fences = (0..frames)
-            .map(|_| unsafe {
-                device
-                    .create_fence(
-                        &FenceCreateInfo::builder().flags(FenceCreateFlags::SIGNALED),
-                        None,
-                    )
-                    .expect("Failed to create fence ...")
-            })
-            .collect::<Vec<_>>();
-
-        let sem_work_done = (0..frames)
-            .map(|_| unsafe {
-                device
-                    .create_semaphore(&SemaphoreCreateInfo::builder(), None)
-                    .expect("Failed to create semaphore ...")
-            })
-            .collect::<Vec<_>>();
-
-        let sem_image_available = (0..frames)
-            .map(|_| unsafe {
-                device
-                    .create_semaphore(&SemaphoreCreateInfo::builder(), None)
-                    .expect("Failed to create semaphore ...")
-            })
-            .collect::<Vec<_>>();
-
-        (work_fences, sem_work_done, sem_image_available)
-    }
-
-    pub fn new(
-        instance: &Instance,
-        ds: &VulkanDeviceState,
-        renderstate: RenderState,
-        previous_swapchain: Option<SwapchainKHR>,
-    ) -> Option<VulkanSwapchainState> {
-        let ext = ash::extensions::khr::Swapchain::new(instance, &ds.device);
-        let (qid, _, cmd_pool, _, _) = ds.queue_data(QueueType::Graphics);
-
-        let (swapchain, images, image_views, framebuffers, depth_stencil, depth_stencil_views) =
-            Self::create_swapchain(
-                &ext,
-                previous_swapchain,
-                &ds.surface,
-                &ds.device,
-                &ds.physical,
-                renderstate,
-                qid,
-            );
-
-        let (work_fences, sem_work_done, sem_img_available) =
-            Self::create_sync_objects(&ds.device, ds.surface.caps.max_image_count);
-
-        Some(VulkanSwapchainState {
-            ext,
-            swapchain,
-            images,
-            image_views,
-            framebuffers,
-            depth_stencil,
-            depth_stencil_views,
-            work_fences,
-            sem_work_done,
-            sem_img_available,
-            cmd_buffers: unsafe {
-                ds.device.allocate_command_buffers(
-                    &CommandBufferAllocateInfo::builder()
-                        .command_pool(cmd_pool)
-                        .command_buffer_count(ds.surface.caps.max_image_count),
-                )
-            }
-            .expect("Failed to allocate command buffers"),
-            frame_index: 0,
-            max_frames: ds.surface.caps.max_image_count,
-        })
-    }
-
-    pub fn handle_suboptimal(&mut self, ds: &VulkanDeviceState, renderpass: RenderState) {
-        let (qid, _, _, _, _) = ds.queue_data(QueueType::Graphics);
-        unsafe {
-            ds.device
-                .device_wait_idle()
-                .expect("Failed to wait for device idle");
-        }
-
-        log::info!("Recreating swapchain");
-
-        let recycled_swapchain = {
-            let mut swapchain = SwapchainKHR::null();
-            std::mem::swap(&mut self.swapchain, &mut swapchain);
-            Some(swapchain)
-        };
-
-        let (
-            swapchain,
-            images,
-            mut image_views,
-            mut framebuffers,
-            mut depth_stencil,
-            mut depth_stencil_views,
-        ) = Self::create_swapchain(
-            &self.ext,
-            recycled_swapchain,
-            &ds.surface,
-            &ds.device,
-            &ds.physical,
-            renderpass,
-            qid,
-        );
-
-        self.swapchain = swapchain;
-        self.images = images;
-
-        std::mem::swap(&mut self.image_views, &mut image_views);
-        image_views.into_iter().for_each(|img_view| unsafe {
-            ds.device.destroy_image_view(img_view, None);
-        });
-
-        std::mem::swap(&mut self.framebuffers, &mut framebuffers);
-        framebuffers.into_iter().for_each(|fb| unsafe {
-            ds.device.destroy_framebuffer(fb, None);
-        });
-
-        std::mem::swap(&mut self.depth_stencil_views, &mut depth_stencil_views);
-        depth_stencil_views.into_iter().for_each(|view| unsafe {
-            ds.device.destroy_image_view(view, None);
-        });
-
-        std::mem::swap(&mut self.depth_stencil, &mut depth_stencil);
-        depth_stencil
-            .into_iter()
-            .for_each(|(image, device_mem)| unsafe {
-                ds.device.free_memory(device_mem, None);
-                ds.device.destroy_image(image, None);
-            });
-
-        self.frame_index = 0;
-
-        let (mut fences, mut work_done, mut img_avail) =
-            Self::create_sync_objects(&ds.device, self.max_frames);
-
-        std::mem::swap(&mut self.work_fences, &mut fences);
-        fences.into_iter().for_each(|fence| unsafe {
-            ds.device.destroy_fence(fence, None);
-        });
-
-        std::mem::swap(&mut self.sem_work_done, &mut work_done);
-        work_done.into_iter().for_each(|s| unsafe {
-            ds.device.destroy_semaphore(s, None);
-        });
-
-        std::mem::swap(&mut self.sem_img_available, &mut img_avail);
-        img_avail.into_iter().for_each(|s| unsafe {
-            ds.device.destroy_semaphore(s, None);
-        });
-    }
-}
-
-impl VulkanRenderer {
-    unsafe extern "system" fn debug_callback_stub(
-        message_severity: ash::vk::DebugUtilsMessageSeverityFlagsEXT,
-        _message_types: ash::vk::DebugUtilsMessageTypeFlagsEXT,
-        p_callback_data: *const ash::vk::DebugUtilsMessengerCallbackDataEXT,
-        _p_user_data: *mut std::os::raw::c_void,
-    ) -> ash::vk::Bool32 {
-        if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::INFO) {
-            log::info!(
-                "[VK] {}",
-                std::ffi::CStr::from_ptr((*p_callback_data).p_message)
-                    .to_str()
-                    .unwrap_or_else(|_| "unknown")
-            );
-        }
-
-        if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::WARNING) {
-            log::warn!(
-                "[VK] {}",
-                std::ffi::CStr::from_ptr((*p_callback_data).p_message)
-                    .to_str()
-                    .unwrap_or_else(|_| "unknown")
-            );
-        }
-
-        if message_severity.intersects(DebugUtilsMessageSeverityFlagsEXT::ERROR) {
-            log::error!(
-                "[VK] {}",
-                std::ffi::CStr::from_ptr((*p_callback_data).p_message)
-                    .to_str()
-                    .unwrap_or_else(|_| "unknown")
-            );
-        }
-
-        ash::vk::FALSE
-    }
-
-    #[cfg(target_os = "linux")]
-    fn create_surface(
-        entry: &Entry,
-        instance: &Instance,
-        wsi: WindowSystemIntegration,
-    ) -> Result<VulkanSurfaceKHRState, ash::vk::Result> {
-        let xlib_surface = ash::extensions::khr::XlibSurface::new(entry, instance);
-
-        unsafe {
-            xlib_surface.create_xlib_surface(
-                &ash::vk::XlibSurfaceCreateInfoKHR::builder()
-                    .dpy(wsi.native_disp as *mut ash::vk::Display)
-                    .window(std::mem::transmute::<u64, ash::vk::Window>(wsi.native_win)),
-                None,
-            )
-        }
-        .map(|khr_surface| VulkanSurfaceKHRState {
-            ext: ash::extensions::khr::Surface::new(entry, instance),
-            surface: khr_surface,
-        })
-    }
-
-    #[cfg(target_os = "windows")]
-    fn create_surface(
-        entry: &Entry,
-        instance: &Instance,
-        wsi: WindowSystemIntegration,
-    ) -> VulkanSurfaceKHRState {
-        let win32_surface = ash::extensions::khr::Win32Surface::new(entry, instance);
-
-        let khr_surface = unsafe {
-            win32_surface.create_win32_surface(
-                &ash::vk::Win32SurfaceCreateInfoKHR::builder()
-                    .hwnd(std::mem::transmute(wsi.hwnd))
-                    .hinstance(std::mem::transmute(wsi.hinstance)),
-                None,
-            )
-        }
-        .expect("Failed to creale XLIB surface");
-
-        VulkanSurfaceKHRState {
-            ext: ash::extensions::khr::Surface::new(entry, instance),
-            surface: khr_surface,
+    pub fn pipeline_render_create_info(&self) -> Option<ash::vk::PipelineRenderingCreateInfo> {
+        match self.device_state.render_state {
+            RenderState::Dynamic {
+                ref color_attachments,
+                depth_attachments,
+                stencil_attachments,
+            } => Some(
+                ash::vk::PipelineRenderingCreateInfo::default()
+                    .color_attachment_formats(color_attachments)
+                    .depth_attachment_format(depth_attachments[0])
+                    .stencil_attachment_format(stencil_attachments[0]),
+            ),
+            RenderState::Renderpass(_) => None,
         }
     }
 
-    fn pick_device(
-        instance: &Instance,
-        surface: VulkanSurfaceKHRState,
-        screen_size: (u32, u32),
-    ) -> Result<VulkanDeviceState, ash::vk::Result> {
-        let phys_devices = unsafe { instance.enumerate_physical_devices() }?;
-
-        let mut phys_device: Option<(VulkanPhysicalDeviceState, u32, u32)> = None;
-        let mut surface_state: Option<VulkanSurfaceState> = None;
-
-        for pd in phys_devices {
-            let pd_properties = unsafe { instance.get_physical_device_properties(pd) };
-
-            if pd_properties.device_type != PhysicalDeviceType::DISCRETE_GPU
-                && pd_properties.device_type != PhysicalDeviceType::INTEGRATED_GPU
-            {
-                log::info!(
-                    "Rejecting device {} (not a GPU device)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            let (phys_dev_props2, props_vk11, props_vk12, props_vk13) = unsafe {
-                let mut props_vk11 = ash::vk::PhysicalDeviceVulkan11Properties::default();
-                let mut props_vk12 = ash::vk::PhysicalDeviceVulkan12Properties::default();
-                let mut props_vk13 = ash::vk::PhysicalDeviceVulkan13Properties::default();
-
-                let mut phys_dev_props2 = ash::vk::PhysicalDeviceProperties2::builder()
-                    .push_next(&mut props_vk11)
-                    .push_next(&mut props_vk12)
-                    .push_next(&mut props_vk13)
-                    .build();
-
-                instance.get_physical_device_properties2(pd, &mut phys_dev_props2);
-                (phys_dev_props2, props_vk11, props_vk12, props_vk13)
-            };
-
-            let phys_dev_memory_props = unsafe {
-                let mut props = ash::vk::PhysicalDeviceMemoryProperties2::default();
-                instance.get_physical_device_memory_properties2(pd, &mut props);
-                props
-            };
-
-            log::info!("{:?}", phys_dev_memory_props);
-
-            log::info!(
-                "{:?}\n{:?}\n{:?}\n{:?}",
-                phys_dev_props2.properties,
-                props_vk11,
-                props_vk12,
-                props_vk13
-            );
-
-            let (phys_dev_features2, f_vk11, f_vk12, f_vk13) = unsafe {
-                let mut f_vk11 = ash::vk::PhysicalDeviceVulkan11Features::default();
-                let mut f_vk12 = ash::vk::PhysicalDeviceVulkan12Features::default();
-                let mut f_vk13 = ash::vk::PhysicalDeviceVulkan13Features::default();
-
-                let mut pdf2 = ash::vk::PhysicalDeviceFeatures2::builder()
-                    .push_next(&mut f_vk11)
-                    .push_next(&mut f_vk12)
-                    .push_next(&mut f_vk13)
-                    .build();
-
-                instance.get_physical_device_features2(pd, &mut pdf2);
-
-                (pdf2, f_vk11, f_vk12, f_vk13)
-            };
-
-            log::info!(
-                "{:?}\n{:?}\n{:?}\n{:?}",
-                phys_dev_features2.features,
-                f_vk11,
-                f_vk12,
-                f_vk13
-            );
-
-            let pd_features = unsafe { instance.get_physical_device_features(pd) };
-
-            if pd_features.multi_draw_indirect == 0 || !pd_features.geometry_shader == 0 {
-                log::info!(
-                    "Rejecting device {} (no geometry shader and/or MultiDrawIndirect)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            if f_vk12.descriptor_binding_partially_bound == 0
-                || f_vk12.descriptor_indexing == 0
-                || f_vk12.draw_indirect_count == 0
-            {
-                log::info!(
-                    "Rejecting device {} (no descriptor partially bound/descriptor indexing/draw indirect count)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            let queue_family_props =
-                unsafe { instance.get_physical_device_queue_family_properties(pd) };
-
-            let maybe_queue_id = queue_family_props
-                .iter()
-                .enumerate()
-                .find(|(_, queue_props)| {
-                    queue_props
-                        .queue_flags
-                        .contains(ash::vk::QueueFlags::GRAPHICS | ash::vk::QueueFlags::COMPUTE)
-                })
-                .map(|(queue_id, _)| queue_id);
-
-            if maybe_queue_id.is_none() {
-                log::info!(
-                    "Rejecting device {} (no GRAPHICS + COMPUTE support)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            let queue_id = maybe_queue_id.unwrap() as u32;
-            let maybe_transfer_queue = queue_family_props
-                .iter()
-                .enumerate()
-                .filter(|(qid, queue_props)| {
-                    *qid != queue_id as usize
-                        && queue_props
-                            .queue_flags
-                            .contains(ash::vk::QueueFlags::TRANSFER)
-                })
-                .map(|(qid, _)| qid)
-                .nth(0);
-
-            if maybe_transfer_queue.is_none() {
-                log::info!(
-                    "Rejecting device {} (no TRANSFER queue present)",
-                    pd_properties.device_id,
-                );
-                continue;
-            }
-
-            //
-            // query surface support
-            let device_surface_support = unsafe {
-                surface
-                    .ext
-                    .get_physical_device_surface_support(pd, queue_id, surface.surface)
-            }?;
-
-            if !device_surface_support {
-                log::info!(
-                    "Rejecting device {} (does not support surface)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            let surface_caps =
-                Self::get_surface_capabilities(pd, surface.surface, &surface.ext, screen_size)?;
-
-            if !surface_caps
-                .supported_usage_flags
-                .intersects(ImageUsageFlags::COLOR_ATTACHMENT)
-            {
-                log::info!(
-                    "Rejecting device {} (surface does not support COLOR_ATTACHMENT)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            //
-            // query surface formats
-            let maybe_surface_format = unsafe {
-                surface
-                    .ext
-                    .get_physical_device_surface_formats(pd, surface.surface)
-                    .map(|surface_formats| {
-                        surface_formats
-                            .iter()
-                            .find(|fmt| {
-                                fmt.format == Format::B8G8R8A8_UNORM
-                                    || fmt.format == Format::R8G8B8A8_UNORM
-                            })
-                            .copied()
-                    })
-            }?;
-
-            if maybe_surface_format.is_none() {
-                log::info!("Rejecting device {} (does not support surface format B8G8R8A8_UNORM/R8G8B8A8_UNORM)", pd_properties.device_id);
-                continue;
-            }
-
-            let image_format_props = unsafe {
-                instance.get_physical_device_image_format_properties(
-                    pd,
-                    maybe_surface_format.unwrap().format,
-                    ImageType::TYPE_2D,
-                    ImageTiling::OPTIMAL,
-                    ImageUsageFlags::SAMPLED,
-                    ImageCreateFlags::empty(),
-                )
-            };
-
-            if image_format_props.is_err() {
-                log::info!(
-                    "Rejecting device {} (image format properties error {:?})",
-                    pd_properties.device_id,
-                    image_format_props
-                );
-                continue;
-            }
-
-            //
-            // query present mode
-            let maybe_present_mode = unsafe {
-                surface
-                    .ext
-                    .get_physical_device_surface_present_modes(pd, surface.surface)
-                    .map(|present_modes| {
-                        present_modes
-                            .iter()
-                            .find(|&&mode| {
-                                mode == PresentModeKHR::MAILBOX || mode == PresentModeKHR::FIFO
-                            })
-                            .copied()
-                    })
-                    .expect("Failed to query present modes")
-            };
-
-            if maybe_present_mode.is_none() {
-                log::info!(
-                    "Rejecting device {} (does not support presentation mode MAILBOX/FIFO)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            //
-            // query depth stencil support
-            let depth_stencil_fmt = [Format::D32_SFLOAT_S8_UINT, Format::D24_UNORM_S8_UINT]
-                .into_iter()
-                .filter_map(|fmt| unsafe {
-                    instance
-                        .get_physical_device_image_format_properties(
-                            pd,
-                            fmt,
-                            ImageType::TYPE_2D,
-                            ImageTiling::OPTIMAL,
-                            ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                            ImageCreateFlags::empty(),
-                        )
-                        .map(|_| fmt)
-                        .ok()
-                })
-                .nth(0);
-
-            if depth_stencil_fmt.is_none() {
-                log::info!(
-                    "Rejecting device {} (does not support depth stencil formats)",
-                    pd_properties.device_id
-                );
-                continue;
-            }
-
-            surface_state = Some(VulkanSurfaceState {
-                khr: surface,
-                caps: surface_caps,
-                fmt: maybe_surface_format.unwrap(),
-                depth_fmt: depth_stencil_fmt.unwrap(),
-                present_mode: maybe_present_mode.unwrap(),
-            });
-
-            let memory_properties = unsafe { instance.get_physical_device_memory_properties(pd) };
-
-            phys_device = Some((
-                VulkanPhysicalDeviceState {
-                    device: pd,
-                    properties: DeviceProperties {
-                        base: ash::vk::PhysicalDeviceProperties2 {
-                            p_next: std::ptr::null_mut(),
-                            ..phys_dev_props2
-                        },
-                        vk11: ash::vk::PhysicalDeviceVulkan11Properties {
-                            p_next: std::ptr::null_mut(),
-                            ..props_vk11
-                        },
-                        vk12: ash::vk::PhysicalDeviceVulkan12Properties {
-                            p_next: std::ptr::null_mut(),
-                            ..props_vk12
-                        },
-                        vk13: ash::vk::PhysicalDeviceVulkan13Properties {
-                            p_next: std::ptr::null_mut(),
-                            ..props_vk13
-                        },
-                    },
-                    features: DeviceFeatures {
-                        base: ash::vk::PhysicalDeviceFeatures2 {
-                            p_next: std::ptr::null_mut(),
-                            ..phys_dev_features2
-                        },
-                        vk11: ash::vk::PhysicalDeviceVulkan11Features {
-                            p_next: std::ptr::null_mut(),
-                            ..f_vk11
-                        },
-                        vk12: ash::vk::PhysicalDeviceVulkan12Features {
-                            p_next: std::ptr::null_mut(),
-                            ..f_vk12
-                        },
-                        vk13: ash::vk::PhysicalDeviceVulkan13Features {
-                            p_next: std::ptr::null_mut(),
-                            ..f_vk13
-                        },
-                    },
-                    memory_properties,
-                },
-                queue_id,
-                maybe_transfer_queue.unwrap() as u32,
-            ));
-
-            break;
-        }
-
-        if surface_state.is_none() || phys_device.is_none() {
-            return Err(ash::vk::Result::ERROR_FEATURE_NOT_PRESENT);
-        }
-
-        let surface_state = surface_state.unwrap();
-        let (phys_device, graphics_queue, transfer_queue) = phys_device.unwrap();
-
-        //
-        // create logical device
-        let device = unsafe {
-            let mut f_vk11 = phys_device.features.vk11;
-            let mut f_vk12 = phys_device.features.vk12;
-            let mut f_vk13 = phys_device.features.vk13;
-
-            instance.create_device(
-                phys_device.device,
-                &DeviceCreateInfo::builder()
-                    .push_next(&mut f_vk11)
-                    .push_next(&mut f_vk12)
-                    .push_next(&mut f_vk13)
-                    .enabled_extension_names(&[
-                        ash::extensions::khr::Swapchain::name().as_ptr(),
-                        ash::extensions::khr::DynamicRendering::name().as_ptr(),
-                        ash::extensions::ext::DescriptorBuffer::name().as_ptr(),
-                    ])
-                    .queue_create_infos(&[
-                        *DeviceQueueCreateInfo::builder()
-                            .queue_family_index(graphics_queue)
-                            .queue_priorities(&[1f32]),
-                        *DeviceQueueCreateInfo::builder()
-                            .queue_family_index(transfer_queue)
-                            .queue_priorities(&[1f32]),
-                    ]),
-                None,
-            )
-        }?;
-
-        let queues: SmallVec<[Queue; 2]> = [graphics_queue, transfer_queue]
-            .iter()
-            .map(|qid| unsafe { device.get_device_queue(*qid, 0) })
-            .collect();
-
-        let cmd_pools: SmallVec<[CommandPool; 2]> = [graphics_queue, transfer_queue]
-            .iter()
-            .filter_map(|qid| {
-                unsafe {
-                    device.create_command_pool(
-                        &CommandPoolCreateInfo::builder()
-                            .queue_family_index(*qid)
-                            .flags(
-                                CommandPoolCreateFlags::TRANSIENT
-                                    | CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-                            ),
-                        None,
-                    )
-                }
-                .ok()
-            })
-            .collect();
-
-        if cmd_pools.len() != 2 {
-            return Err(ash::vk::Result::ERROR_UNKNOWN);
-        }
-
-        let descriptor_pool = unsafe {
-            device.create_descriptor_pool(
-                &DescriptorPoolCreateInfo::builder()
-                    .max_sets(4096)
-                    .pool_sizes(&[*DescriptorPoolSize::builder()
-                        .ty(DescriptorType::UNIFORM_BUFFER_DYNAMIC)
-                        .descriptor_count(1024)]),
-                None,
-            )
-        }?;
-
-        let empty_descriptor_layout = unsafe {
-            device.create_descriptor_set_layout(&DescriptorSetLayoutCreateInfo::builder(), None)
-        }?;
-
-        Ok(VulkanDeviceState {
-            pipeline_cache: unsafe {
-                device.create_pipeline_cache(&ash::vk::PipelineCacheCreateInfo::builder(), None)
-            }?,
-            device,
-            physical: phys_device,
-            surface: surface_state,
-            empty_descriptor_layout,
-            queues: QueueData {
-                families: [graphics_queue, transfer_queue],
-                queues: [queues[0], queues[1]],
-                cmdpools: [cmd_pools[0], cmd_pools[1]],
-                pool_locks: [SpinMutex::new(), SpinMutex::new()],
-                queue_locks: [SpinMutex::new(), SpinMutex::new()],
-            },
-        })
-    }
-
-    pub fn new(wsi: WindowSystemIntegration, window_size: (u32, u32)) -> Option<VulkanRenderer> {
-        let entry = Entry::linked();
-        let instance_ver = entry
-            .try_enumerate_instance_version()
-            .expect("Failed to get Vulkan version")?;
-
-        log::info!(
-            "Vulkan version: {}.{}.{}",
-            ash::vk::api_version_major(instance_ver),
-            ash::vk::api_version_minor(instance_ver),
-            ash::vk::api_version_patch(instance_ver)
-        );
-
-        let mut debug_utils_msg_create_info = DebugUtilsMessengerCreateInfoEXT::builder()
-            .message_severity(
-                DebugUtilsMessageSeverityFlagsEXT::ERROR
-                    | DebugUtilsMessageSeverityFlagsEXT::WARNING,
-            )
-            .message_type(
-                DebugUtilsMessageTypeFlagsEXT::GENERAL
-                    | DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-                    | DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-            )
-            .pfn_user_callback(Some(VulkanRenderer::debug_callback_stub));
-
-        let app_name_engine = [
-            CString::new("Vulkan + Rust adventures").unwrap(),
-            CString::new("Epic engine").unwrap(),
-        ];
-
-        let app_create_info = ApplicationInfo::builder()
-            .api_version(ash::vk::make_api_version(0, 1, 3, 0))
-            .application_name(app_name_engine[0].as_c_str())
-            .application_version(1)
-            .engine_name(app_name_engine[1].as_c_str())
-            .engine_version(1);
-
-        let enabled_layers = [b"VK_LAYER_KHRONOS_validation\0".as_ptr() as *const c_char];
-
-        let enabled_instance_extensions = [
-            ash::extensions::khr::Surface::name().as_ptr(),
-            #[cfg(target_os = "linux")]
-            ash::extensions::khr::XlibSurface::name().as_ptr(),
-            #[cfg(target_os = "windows")]
-            ash::extensions::khr::Win32Surface::name().as_ptr(),
-            ash::extensions::ext::DebugUtils::name().as_ptr(),
-        ];
-
-        unsafe {
-            entry
-                .enumerate_instance_extension_properties(None)
-                .map(|instance_exts| {
-                    instance_exts.iter().for_each(|ext| {
-                        let ext_name = std::ffi::CStr::from_ptr(ext.extension_name.as_ptr())
-                            .to_str()
-                            .unwrap();
-                        log::info!("[instance extension :: {}]", ext_name);
-                    });
-                })
-                .expect("Failed to enumerate instance extensions ...");
-        }
-
-        let instance = unsafe {
-            entry.create_instance(
-                &InstanceCreateInfo::builder()
-                    .application_info(&app_create_info)
-                    .push_next(&mut debug_utils_msg_create_info)
-                    .enabled_layer_names(&enabled_layers)
-                    .enabled_extension_names(&enabled_instance_extensions),
-                None,
-            )
-        }
-        .expect("Failed to create instance");
-
-        let (dbg, msgr) = unsafe {
-            let dbg = DebugUtils::new(&entry, &instance);
-            let msgr = dbg
-                .create_debug_utils_messenger(&debug_utils_msg_create_info, None)
-                .expect("Failed to create debug messenger");
-            (dbg, msgr)
-        };
-
-        let surface_state = Self::create_surface(&entry, &instance, wsi).ok()?;
-
-        let device_state =
-            Self::pick_device(&instance, surface_state, window_size).expect("Faile to pick device");
-
-        let renderstate =
-            Self::create_render_state(&device_state).expect("Failed to create render_state");
-
-        let swapchain_state =
-            VulkanSwapchainState::new(&instance, &device_state, renderstate, None)?;
-
-        let staging_sys = StagingSystem::create(
-            &device_state.device,
-            &device_state.physical.memory_properties,
-        )
-        .ok()?;
-
-        Some(VulkanRenderer {
-            staging_sys,
-            dbg,
-            msgr,
-            entry,
-            instance,
-            device_state,
-            swapchain: swapchain_state,
-            renderstate,
-        })
-    }
-
-    fn create_render_state(ds: &VulkanDeviceState) -> VkResult<RenderState> {
-        if ds.physical.features.vk13.dynamic_rendering != 0 {
-            Ok(RenderState::Dynamic {
-                color_attachments: [ds.surface.fmt.format],
-                depth_attachments: [ds.surface.depth_fmt],
-                stencil_attachments: [ds.surface.depth_fmt],
-            })
-        } else {
-            let attachment_descriptions = [AttachmentDescription::builder()
-                .format(ds.surface.fmt.format)
-                .samples(SampleCountFlags::TYPE_1)
-                .load_op(AttachmentLoadOp::CLEAR)
-                .store_op(AttachmentStoreOp::STORE)
-                .stencil_load_op(AttachmentLoadOp::DONT_CARE)
-                .stencil_store_op(AttachmentStoreOp::DONT_CARE)
-                .initial_layout(ImageLayout::UNDEFINED)
-                .final_layout(ImageLayout::PRESENT_SRC_KHR)
-                .build()];
-
-            let attachment_refs = [AttachmentReference::builder()
-                .attachment(0)
-                .layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                .build()];
-
-            unsafe {
-                ds.device.create_render_pass(
-                    &RenderPassCreateInfo::builder()
-                        .attachments(&attachment_descriptions)
-                        .subpasses(&[SubpassDescription::builder()
-                            .color_attachments(&attachment_refs)
-                            .pipeline_bind_point(PipelineBindPoint::GRAPHICS)
-                            .build()]),
-                    None,
-                )
-            }
-            .map(|vk_pass| RenderState::Renderpass(vk_pass))
-        }
-    }
-
-    pub fn begin_rendering(&mut self, fb_size: Extent2D) -> FrameRenderContext {
+    pub fn begin_rendering(&mut self, fb_size: ash::vk::Extent2D) -> FrameRenderContext {
         //
         // wait for previous submittted work
         unsafe {
             self.device_state
-                .device
+                .logical
                 .wait_for_fences(
-                    &[self.swapchain.work_fences[self.swapchain.frame_index as usize]],
+                    &[self.presentation_state.swapchain.work_fences
+                        [self.presentation_state.frame_index as usize]],
                     true,
                     u64::MAX,
                 )
                 .expect("Failed to wait for submits");
 
             self.device_state
-                .device
-                .reset_fences(&[self.swapchain.work_fences[self.swapchain.frame_index as usize]])
+                .logical
+                .reset_fences(&[self.presentation_state.swapchain.work_fences
+                    [self.presentation_state.frame_index as usize]])
                 .expect("Failed to reset fence ...");
         }
 
         let mut idx = 0u32;
         let acquired_image = 'acquire_swapchain_image: loop {
             let acquired_image = unsafe {
-                self.swapchain.ext.acquire_next_image(
-                    self.swapchain.swapchain,
+                self.presentation_state.swapchain_devext.acquire_next_image(
+                    self.presentation_state.swapchain.swapchain,
                     u64::MAX,
-                    self.swapchain.sem_img_available[self.swapchain.frame_index as usize],
+                    self.presentation_state.swapchain.sem_image_available
+                        [self.presentation_state.frame_index as usize],
                     Fence::null(),
                 )
             };
@@ -2252,9 +836,9 @@ impl VulkanRenderer {
                     if !suboptimal {
                         break 'acquire_swapchain_image image_idx;
                     } else {
-                        self.handle_surface_size_changed(fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
+                        // self.handle_surface_size_changed(fb_size);
+                        // self.swapchain
+                        //     .handle_suboptimal(&self.device_state, self.renderstate);
                         idx += 1;
                     }
                 }
@@ -2265,9 +849,9 @@ impl VulkanRenderer {
                     if acquire_err == ash::vk::Result::SUBOPTIMAL_KHR
                         || acquire_err == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
                     {
-                        self.handle_surface_size_changed(fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
+                        // self.handle_surface_size_changed(fb_size);
+                        // self.swapchain
+                        //     .handle_suboptimal(&self.device_state, self.renderstate);
                         idx += 1;
                     } else {
                         panic!("Acquire image fatal error {acquire_err:?}");
@@ -2280,54 +864,57 @@ impl VulkanRenderer {
         // begin command buffer + renderpass
         unsafe {
             self.device_state
-                .device
+                .logical
                 .reset_command_buffer(
-                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-                    CommandBufferResetFlags::empty(),
+                    self.presentation_state.cmd_buffers
+                        [self.presentation_state.frame_index as usize],
+                    ash::vk::CommandBufferResetFlags::empty(),
                 )
                 .expect("Failed to reset command buffer");
 
             self.device_state
-                .device
+                .logical
                 .begin_command_buffer(
-                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-                    &CommandBufferBeginInfo::builder()
-                        .flags(CommandBufferUsageFlags::ONE_TIME_SUBMIT),
+                    self.presentation_state.cmd_buffers
+                        [self.presentation_state.frame_index as usize],
+                    &ash::vk::CommandBufferBeginInfo::default()
+                        .flags(ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT),
                 )
                 .expect("Failed to begin command buffer ...");
         }
 
         //
         // ensure all loaded images are transfered to the graphics queue
-        self.do_image_ownership_transfers(
-            self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-        );
+        // self.do_image_ownership_transfers(
+        //     self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
+        // );
 
-        let color_clear = ClearValue {
-            color: ClearColorValue {
+        let color_clear = ash::vk::ClearValue {
+            color: ash::vk::ClearColorValue {
                 float32: [0f32, 0f32, 0f32, 1f32],
             },
         };
 
-        let depth_stencil_clear = ClearValue {
-            depth_stencil: ClearDepthStencilValue {
+        let depth_stencil_clear = ash::vk::ClearValue {
+            depth_stencil: ash::vk::ClearDepthStencilValue {
                 depth: 1.0f32,
                 stencil: 0,
             },
         };
 
-        let (qid, queue, cmd_pool, _, _) = self.device_state.queue_data(QueueType::Graphics);
-        match self.renderstate {
+        let (qid, queue, cmd_pool, _, _) = self.queue_data(QueueType::Graphics);
+        match self.device_state.render_state {
             RenderState::Dynamic { .. } => unsafe {
                 //
                 // transition attachments from undefined layout to optimal layout
 
-                self.device_state.device.cmd_pipeline_barrier2(
-                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-                    &DependencyInfo::builder()
+                self.device_state.logical.cmd_pipeline_barrier2(
+                    self.presentation_state.cmd_buffers
+                        [self.presentation_state.frame_index as usize],
+                    &DependencyInfo::default()
                         .dependency_flags(DependencyFlags::BY_REGION)
                         .image_memory_barriers(&[
-                            *ImageMemoryBarrier2::builder()
+                            ImageMemoryBarrier2::default()
                                 .src_stage_mask(PipelineStageFlags2::TOP_OF_PIPE)
                                 .src_access_mask(AccessFlags2::NONE)
                                 .dst_stage_mask(PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
@@ -2336,16 +923,19 @@ impl VulkanRenderer {
                                 .new_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
                                 .src_queue_family_index(qid)
                                 .dst_queue_family_index(qid)
-                                .image(self.swapchain.images[acquired_image as usize])
+                                .image(
+                                    self.presentation_state.swapchain.images
+                                        [acquired_image as usize],
+                                )
                                 .subresource_range(
-                                    *ImageSubresourceRange::builder()
+                                    ImageSubresourceRange::default()
                                         .aspect_mask(ImageAspectFlags::COLOR)
                                         .base_mip_level(0)
                                         .level_count(1)
                                         .base_array_layer(0)
                                         .layer_count(1),
                                 ),
-                            *ImageMemoryBarrier2::builder()
+                            ImageMemoryBarrier2::default()
                                 .src_stage_mask(PipelineStageFlags2::TOP_OF_PIPE)
                                 .src_access_mask(AccessFlags2::NONE)
                                 .dst_stage_mask(PipelineStageFlags2::EARLY_FRAGMENT_TESTS)
@@ -2354,9 +944,13 @@ impl VulkanRenderer {
                                 .new_layout(ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
                                 .src_queue_family_index(qid)
                                 .dst_queue_family_index(qid)
-                                .image(self.swapchain.depth_stencil[acquired_image as usize].0)
+                                .image(
+                                    self.presentation_state.swapchain.depth_stencil
+                                        [acquired_image as usize]
+                                        .0,
+                                )
                                 .subresource_range(
-                                    *ImageSubresourceRange::builder()
+                                    ImageSubresourceRange::default()
                                         .aspect_mask(
                                             ImageAspectFlags::DEPTH | ImageAspectFlags::STENCIL,
                                         )
@@ -2370,9 +964,10 @@ impl VulkanRenderer {
 
                 //
                 // begin rendering
-                self.device_state.device.cmd_begin_rendering(
-                    self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-                    &RenderingInfo::builder()
+                self.device_state.logical.cmd_begin_rendering(
+                    self.presentation_state.cmd_buffers
+                        [self.presentation_state.frame_index as usize],
+                    &ash::vk::RenderingInfo::default()
                         .render_area(Rect2D {
                             offset: Offset2D::default(),
                             extent: fb_size,
@@ -2429,1091 +1024,1134 @@ impl VulkanRenderer {
             acquired_swapchain_image: acquired_image,
         }
     }
+}
 
-    pub fn end_rendering(&mut self, frame_ctx: FrameRenderContext) {
-        let (qid, queue, cmd_pool, _, _) = self.device_state.queue_data(QueueType::Graphics);
-        //
-        // end command buffer + renderpass
-        match self.renderstate {
-            RenderState::Renderpass(_) => unsafe {
-                self.device_state
-                    .device
-                    .cmd_end_render_pass(frame_ctx.cmd_buff);
-            },
-            RenderState::Dynamic { .. } => unsafe {
-                self.device_state
-                    .device
-                    .cmd_end_rendering(frame_ctx.cmd_buff);
+struct PickedDeviceExtraData {
+    surface_format: ash::vk::SurfaceFormatKHR,
+    depth_stencil_format: ash::vk::Format,
+    presentation_mode: ash::vk::PresentModeKHR,
+    surface_caps: ash::vk::SurfaceCapabilitiesKHR,
+    queue_family_graphics: u32,
+    queue_family_transfer: u32,
+}
+
+fn pick_device(
+    instance: &ash::Instance,
+    surface_instance: &ash::khr::surface::Instance,
+    surface_handle: ash::vk::SurfaceKHR,
+) -> std::result::Result<(PhysicalDeviceState, PickedDeviceExtraData), GraphicsError> {
+    unsafe { instance.enumerate_physical_devices() }?
+        .into_iter()
+        .filter_map(|phys_device| -> Option< (PhysicalDeviceState, PickedDeviceExtraData)  > {
+            let (physical_device_properties, props_vk11, props_vk12, props_vk13) = unsafe {
+                let mut props_vk11 = ash::vk::PhysicalDeviceVulkan11Properties::default();
+                let mut props_vk12 = ash::vk::PhysicalDeviceVulkan12Properties::default();
+                let mut props_vk13 = ash::vk::PhysicalDeviceVulkan13Properties::default();
+
+                let mut phys_dev_props2 = ash::vk::PhysicalDeviceProperties2::default()
+                    .push_next(&mut props_vk11)
+                    .push_next(&mut props_vk12)
+                    .push_next(&mut props_vk13);
+
+                instance.get_physical_device_properties2(phys_device, &mut phys_dev_props2);
+                (
+                    phys_dev_props2.properties,
+                    props_vk11,
+                    props_vk12,
+                    props_vk13,
+                )
+            };
+
+            if physical_device_properties.device_type != ash::vk::PhysicalDeviceType::DISCRETE_GPU
+            && physical_device_properties.device_type != ash::vk::PhysicalDeviceType::INTEGRATED_GPU
+            {
+                log::info!(
+                    "Rejecting device {} (not a GPU device)",
+                    physical_device_properties.device_id
+                );
+                return None;
+            }
+
+            let phys_dev_memory_props = unsafe {
+                let mut props = ash::vk::PhysicalDeviceMemoryProperties2::default();
+                instance.get_physical_device_memory_properties2(phys_device, &mut props);
+                props.memory_properties
+            };
+
+            log::info!("{:?}", phys_dev_memory_props);
+
+            log::info!(
+                "{:?}\n{:?}\n{:?}\n{:?}",
+                physical_device_properties,
+                props_vk11,
+                props_vk12,
+                props_vk13
+            );
+
+            let (physical_device_features, f_vk11, f_vk12, f_vk13) = unsafe {
+                let mut f_vk11 = ash::vk::PhysicalDeviceVulkan11Features::default();
+                let mut f_vk12 = ash::vk::PhysicalDeviceVulkan12Features::default();
+                let mut f_vk13 = ash::vk::PhysicalDeviceVulkan13Features::default();
+
+                let mut pdf2 = ash::vk::PhysicalDeviceFeatures2::default()
+                    .push_next(&mut f_vk11)
+                    .push_next(&mut f_vk12)
+                    .push_next(&mut f_vk13);
+
+                instance.get_physical_device_features2(phys_device, &mut pdf2);
+
+                (pdf2.features, f_vk11, f_vk12, f_vk13)
+            };
+
+            log::info!(
+                "{:?}\n{:?}\n{:?}\n{:?}",
+                physical_device_features,
+                f_vk11,
+                f_vk12,
+                f_vk13
+            );
+
+            if physical_device_features.multi_draw_indirect == 0
+                || physical_device_features.geometry_shader == 0
+            {
+                log::info!(
+                    "Rejecting device {} (no geometry shader and/or MultiDrawIndirect)",
+                    physical_device_properties.device_id
+                );
+                return None;
+            }
+
+            if f_vk12.descriptor_binding_partially_bound == 0
+                || f_vk12.descriptor_indexing == 0
+                || f_vk12.draw_indirect_count == 0
+            {
+                log::info!(
+                    "Rejecting device {} (no descriptor partially bound/descriptor indexing/draw indirect count)",
+                    physical_device_properties.device_id
+                );
+                return None;
+             }
+
+            let queue_family_props =
+                unsafe { instance.get_physical_device_queue_family_properties(phys_device) };
+
+            let maybe_queue_id = queue_family_props
+                .iter()
+                .enumerate()
+                .find(|(_, queue_props)| {
+                    queue_props
+                        .queue_flags
+                        .contains(ash::vk::QueueFlags::GRAPHICS | ash::vk::QueueFlags::COMPUTE)
+                })
+                .map(|(queue_id, _)| queue_id);
+
+            if maybe_queue_id.is_none() {
+                log::info!(
+                    "Rejecting device {} (no GRAPHICS + COMPUTE support)",
+                    physical_device_properties.device_id
+                );
+                return None;
+            }
+
+            let queue_id = maybe_queue_id.unwrap() as u32;
+            let maybe_transfer_queue = queue_family_props
+                .iter()
+                .enumerate()
+                .filter(|(qid, queue_props)| {
+                    *qid != queue_id as usize
+                        && queue_props
+                            .queue_flags
+                            .contains(ash::vk::QueueFlags::TRANSFER)
+                })
+                .map(|(qid, _)| qid)
+                .nth(0);
+
+            if maybe_transfer_queue.is_none() {
+                log::info!(
+                    "Rejecting device {} (no TRANSFER queue present)",
+                    physical_device_properties.device_id,
+                );
+                return None;
+            }
+            //
+            // query surface support
+            match unsafe {
+                surface_instance.get_physical_device_surface_support(phys_device, queue_id, surface_handle)
+            } {
+                Ok(true) => { Some(()) },
+                Ok(false) => {
+                    log::info!("Rejecting device {}, no surface support", physical_device_properties.device_id);
+                    None
+                },
+                Err(e) => {
+                    log::error!("Error querying device surface support {e:?}");
+                    None
+                }
+            }?;
+
+            let surface_caps = unsafe {
+                surface_instance.get_physical_device_surface_capabilities(phys_device, surface_handle)
+            }.ok()?;
+
+            if !surface_caps
+                .supported_usage_flags
+                .intersects(ImageUsageFlags::COLOR_ATTACHMENT)
+            {
+                log::info!(
+                    "Rejecting device {} (surface does not support COLOR_ATTACHMENT)",
+                    physical_device_properties.device_id
+                );
+                return None;
+             }
+
                 //
-                // transition image from attachment optimal to SRC_PRESENT
-                self.device_state.device.cmd_pipeline_barrier2(
-                    frame_ctx.cmd_buff,
-                    &DependencyInfo::builder()
-                        .dependency_flags(DependencyFlags::BY_REGION)
-                        .image_memory_barriers(&[*ImageMemoryBarrier2::builder()
-                            .src_stage_mask(PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-                            .src_access_mask(AccessFlags2::COLOR_ATTACHMENT_WRITE)
-                            .dst_stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)
-                            .dst_access_mask(AccessFlags2::MEMORY_READ)
-                            .old_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-                            .new_layout(ImageLayout::PRESENT_SRC_KHR)
-                            .src_queue_family_index(qid)
-                            .dst_queue_family_index(qid)
-                            .image(
-                                self.swapchain.images[frame_ctx.acquired_swapchain_image as usize],
-                            )
+            // query surface formats
+            let maybe_surface_format = unsafe {
+                surface_instance
+                    .get_physical_device_surface_formats(phys_device, surface_handle)
+                    .map(|surface_formats| {
+                        surface_formats
+                            .iter()
+                            .find(|fmt| {
+                                fmt.format == Format::B8G8R8A8_UNORM
+                                    || fmt.format == Format::R8G8B8A8_UNORM
+                            })
+                            .copied()
+                    })
+            }.ok().flatten();
+
+            if maybe_surface_format.is_none() {
+                log::info!("Rejecting device {} (does not support surface format B8G8R8A8_UNORM/R8G8B8A8_UNORM)", physical_device_properties.device_id);
+                return None;
+            }
+
+            let image_format_props = unsafe {
+                instance.get_physical_device_image_format_properties(
+                    phys_device,
+                    maybe_surface_format.unwrap().format,
+                    ImageType::TYPE_2D,
+                    ImageTiling::OPTIMAL,
+                    ImageUsageFlags::SAMPLED,
+                    ash::vk::ImageCreateFlags::empty(),
+                )
+            };
+
+            if image_format_props.is_err() {
+                log::info!(
+                    "Rejecting device {} (image format properties error {:?})",
+                    physical_device_properties.device_id,
+                    image_format_props
+                );
+                return None;
+            }
+
+            //
+            // query present mode
+            let maybe_present_mode = unsafe {
+                surface_instance .get_physical_device_surface_present_modes(phys_device, surface_handle)
+                    .map(|present_modes| {
+                        present_modes
+                            .iter()
+                            .find(|&&mode| {
+                                mode == ash::vk::PresentModeKHR::MAILBOX || mode == ash::vk::PresentModeKHR::FIFO
+                            })
+                            .copied()
+                    })
+            }.ok().flatten();
+
+            if maybe_present_mode.is_none() {
+                log::info!(
+                    "Rejecting device {} (does not support presentation mode MAILBOX/FIFO)",
+                    physical_device_properties.device_id
+                );
+                return None;
+            }
+
+            //
+            // query depth stencil support
+            let depth_stencil_fmt = [Format::D32_SFLOAT_S8_UINT, Format::D24_UNORM_S8_UINT]
+                .into_iter()
+                .filter_map(|fmt| unsafe {
+                    instance
+                        .get_physical_device_image_format_properties(
+                            phys_device,
+                            fmt,
+                            ImageType::TYPE_2D,
+                            ImageTiling::OPTIMAL,
+                            ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                            ash::vk::ImageCreateFlags::empty(),
+                        )
+                        .map(|_| fmt)
+                        .ok()
+                })
+                .nth(0);
+
+            if depth_stencil_fmt.is_none() {
+                log::info!(
+                    "Rejecting device {} (does not support depth stencil formats)",
+                    physical_device_properties.device_id
+                );
+                return None;
+            }
+
+            let surface_caps= unsafe { surface_instance.get_physical_device_surface_capabilities(phys_device, surface_handle) }.ok()?;
+
+            Some((
+                    PhysicalDeviceState {
+                        device: phys_device,
+                        properties: PhysicalDeviceProperties { base: physical_device_properties },
+                        features: PhysicalDeviceFeatures { base:  physical_device_features, dynamic_rendering: f_vk13.dynamic_rendering != 0, },
+                        memory: phys_dev_memory_props,
+                    },
+                    PickedDeviceExtraData {
+                        depth_stencil_format : depth_stencil_fmt.unwrap(),
+                        surface_format: maybe_surface_format.unwrap(),
+                        presentation_mode: maybe_present_mode.unwrap(),
+                        queue_family_graphics: maybe_queue_id.unwrap() as u32,
+                        queue_family_transfer: maybe_transfer_queue.unwrap() as u32,
+                        surface_caps,
+                    },
+                    ))
+        })
+        .nth(0).ok_or_else(|| GraphicsError::Generic("No device with the required features was found".to_string()))
+}
+
+pub fn choose_memory_heap(
+    memory_req: &ash::vk::MemoryRequirements,
+    required_flags: ash::vk::MemoryPropertyFlags,
+    memory_properties: &ash::vk::PhysicalDeviceMemoryProperties,
+) -> u32 {
+    for memory_type in 0..32 {
+        if (memory_req.memory_type_bits & (1u32 << memory_type)) != 0 {
+            if memory_properties.memory_types[memory_type]
+                .property_flags
+                .contains(required_flags)
+            {
+                return memory_type as u32;
+            }
+        }
+    }
+
+    panic!("Device does not support memory {:?}", required_flags);
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg(target_os = "linux")]
+pub struct WindowSystemIntegration {
+    pub native_disp: *mut std::os::raw::c_void,
+    pub native_win: std::os::raw::c_ulong,
+}
+
+#[derive(Copy, Clone, Debug)]
+#[cfg(target_os = "windows")]
+pub struct WindowSystemIntegration {
+    pub hwnd: isize,
+    pub hinstance: isize,
+}
+
+#[cfg(target_os = "linux")]
+fn create_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
+    wsi: WindowSystemIntegration,
+) -> std::result::Result<VulkanSurfaceWithInstance, GraphicsError> {
+    let xlib_surface = ash::khr::xlib_surface::Instance::new(entry, instance);
+
+    unsafe {
+        xlib_surface.create_xlib_surface(
+            &ash::vk::XlibSurfaceCreateInfoKHR::default()
+                .dpy(wsi.native_disp as *mut ash::vk::Display)
+                .window(std::mem::transmute::<u64, ash::vk::Window>(wsi.native_win)),
+            None,
+        )
+    }
+    .and_then(|khr_surface| {
+        Ok(VulkanSurfaceWithInstance {
+            ext: ash::khr::surface::Instance::new(entry, instance),
+            surface: khr_surface,
+        })
+    })
+    .map_err(|e| GraphicsError::from(e))
+}
+
+#[cfg(target_os = "windows")]
+fn create_surface(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
+    wsi: WindowSystemIntegration,
+) -> std::result::Result<VulkanSurfaceWithInstance, GraphicsError> {
+    let win32_surface = ash::extensions::khr::Win32Surface::new(entry, instance);
+
+    let khr_surface = unsafe {
+        win32_surface.create_win32_surface(
+            &ash::vk::Win32SurfaceCreateInfoKHR::builder()
+                .hwnd(std::mem::transmute(wsi.hwnd))
+                .hinstance(std::mem::transmute(wsi.hinstance)),
+            None,
+        )
+    }?;
+
+    Ok(VulkanSurfaceWithInstance {
+        ext: ash::extensions::khr::Surface::new(entry, instance),
+        surface: khr_surface,
+    })
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum RenderState {
+    Renderpass(ash::vk::RenderPass),
+    Dynamic {
+        color_attachments: [Format; 1],
+        depth_attachments: [Format; 1],
+        stencil_attachments: [Format; 1],
+    },
+}
+
+struct StagingSystem {
+    staging_buffer: ash::vk::Buffer,
+    staging_memory: ash::vk::DeviceMemory,
+    mapped_memory: *mut std::ffi::c_void,
+    free_ptr: std::sync::atomic::AtomicUsize,
+    queued_ownership_transfer: Vec<(Image, u32, u32)>,
+}
+
+impl StagingSystem {
+    fn create(
+        device: &ash::Device,
+        memory_properties: &ash::vk::PhysicalDeviceMemoryProperties,
+    ) -> Result<StagingSystem, GraphicsError> {
+        const STAGING_BUFFER_SIZE: u32 = 512 * 1024 * 2014;
+
+        let staging_buffer = unsafe {
+            device.create_buffer(
+                &ash::vk::BufferCreateInfo::default()
+                    .usage(ash::vk::BufferUsageFlags::TRANSFER_SRC)
+                    .size(STAGING_BUFFER_SIZE as u64)
+                    .sharing_mode(SharingMode::EXCLUSIVE),
+                None,
+            )
+        }?;
+
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                device.destroy_buffer(staging_buffer, None);
+            }
+        }
+
+        let mem_req = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        let staging_memory = unsafe {
+            device.allocate_memory(
+                &MemoryAllocateInfo::default()
+                    .allocation_size(mem_req.size)
+                    .memory_type_index(choose_memory_heap(
+                        &mem_req,
+                        MemoryPropertyFlags::HOST_COHERENT,
+                        memory_properties,
+                    )),
+                None,
+            )
+        }?;
+
+        scopeguard::defer_on_unwind! {
+            unsafe {
+                device.free_memory(staging_memory, None);
+            }
+        }
+
+        unsafe { device.bind_buffer_memory(staging_buffer, staging_memory, 0) }?;
+
+        let mapped_memory = unsafe {
+            device.map_memory(
+                staging_memory,
+                0,
+                STAGING_BUFFER_SIZE as ash::vk::DeviceSize,
+                ash::vk::MemoryMapFlags::empty(),
+            )
+        }?;
+
+        Ok(StagingSystem {
+            staging_buffer,
+            staging_memory,
+            mapped_memory,
+            free_ptr: std::sync::atomic::AtomicUsize::new(0),
+            queued_ownership_transfer: vec![],
+        })
+    }
+
+    fn destroy(&mut self, device: &ash::Device) {
+        unsafe {
+            device.unmap_memory(self.staging_memory);
+            device.free_memory(self.staging_memory, None);
+            device.destroy_buffer(self.staging_buffer, None);
+        }
+    }
+}
+
+pub struct QueueSubmitWaitToken {
+    pub cmd_buffer: ash::vk::CommandBuffer,
+    wait_fence: ash::vk::Fence,
+    queue_type: QueueType,
+}
+
+pub struct QueuedJob {
+    pub cmd_buffer: ash::vk::CommandBuffer,
+    pub queue_type: QueueType,
+}
+//
+// impl<'a> VulkanRenderer<'a> {
+//     pub fn queue_ownership_transfer(&mut self, img: &BindlessImageResourceHandleEntryPair) {
+//         self.staging_sys.queued_ownership_transfer.push((
+//             img.1.image,
+//             img.1.info.level_count,
+//             img.1.info.layer_count,
+//         ));
+//     }
+//
+//     fn do_image_ownership_transfers(&mut self, cmd_buf: CommandBuffer) {
+//         if self.staging_sys.queued_ownership_transfer.is_empty() {
+//             return;
+//         }
+//
+//         let (qid_graphics, _, _, _, _) = self.device_state.queue_data(QueueType::Graphics);
+//         let (qid_transfer, _, _, _, _) = self.device_state.queue_data(QueueType::Transfer);
+//
+//         let memory_barriers: SmallVec<[ImageMemoryBarrier2; 4]> = self
+//             .staging_sys
+//             .queued_ownership_transfer
+//             .drain(..)
+//             .map(|(image, levels, layers)| {
+//                 ImageMemoryBarrier2::default()
+//                     .image(image)
+//                     .dst_stage_mask(PipelineStageFlags2::ALL_GRAPHICS)
+//                     .dst_access_mask(AccessFlags2::SHADER_READ)
+//                     .src_queue_family_index(qid_transfer)
+//                     .dst_queue_family_index(qid_graphics)
+//                     .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+//                     .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+//                     .subresource_range(
+//                         ImageSubresourceRange::default()
+//                             .aspect_mask(ImageAspectFlags::COLOR)
+//                             .base_mip_level(0)
+//                             .level_count(levels)
+//                             .base_array_layer(0)
+//                             .layer_count(layers),
+//                     )
+//             })
+//             .collect();
+//
+//         unsafe {
+//             self.logical().cmd_pipeline_barrier2(
+//                 cmd_buf,
+//                 &DependencyInfo::default()
+//                     .dependency_flags(DependencyFlags::BY_REGION)
+//                     .image_memory_barriers(&memory_barriers),
+//             );
+//         }
+//     }
+//
+
+//
+//     pub fn setup(&self) -> (u32,) {
+//         (self.swapchain.max_frames,)
+//     }
+//
+//
+//     pub fn pipeline_cache(&self) -> PipelineCache {
+//         self.device_state.pipeline_cache
+//     }
+//
+//     pub fn device_raw(&self) -> *const ash::Device {
+//         &self.device_state.device as *const _
+//     }
+//
+//     pub fn wait_all_idle(&mut self) {
+//         unsafe {
+//             // self.device_state
+//             //     .device
+//             //     .queue_wait_idle(self.device_state.queue)
+//             //     .expect("Failed to wait for idle queue");
+//             self.device_state
+//                 .device
+//                 .device_wait_idle()
+//                 .expect("Failed to wait for device idle");
+//         }
+//     }
+//
+
+//
+// pub struct VulkanRenderer_DebugQueueScope<'a> {
+//     logical: &'a VulkanRenderer<'a>,
+// }
+//
+// impl<'a> VulkanRenderer_DebugQueueScope<'a> {
+//     pub fn begin(renderer: &'a VulkanRenderer, name: &str, color: [f32; 4]) -> Self {
+//         renderer.debug_queue_begin_label(name, color);
+//         Self { logical: renderer }
+//     }
+// }
+//
+// impl<'a> std::ops::Drop for VulkanRenderer_DebugQueueScope<'a> {
+//     fn drop(&mut self) {
+//         self.logical.debug_queue_end_label();
+//     }
+// }
+//
+// pub struct VulkanRenderer_DebugMarkerScope<'a> {
+//     renderer: &'a VulkanRenderer<'a>,
+//     cmd_buffer: CommandBuffer,
+// }
+//
+// impl<'a> VulkanRenderer_DebugMarkerScope<'a> {
+//     pub fn begin(
+//         renderer: &'a VulkanRenderer,
+//         cmd_buffer: CommandBuffer,
+//         name: &str,
+//         color: [f32; 4],
+//     ) -> Self {
+//         renderer.debug_marker_begin(cmd_buffer, name, color);
+//         Self {
+//             renderer,
+//             cmd_buffer,
+//         }
+//     }
+// }
+//
+// impl<'a> std::ops::Drop for VulkanRenderer_DebugMarkerScope<'a> {
+//     fn drop(&mut self) {
+//         self.renderer.debug_marker_end(self.cmd_buffer);
+//     }
+// }
+//
+
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+pub enum QueueType {
+    Graphics,
+    Transfer,
+}
+
+struct PresentationState {
+    cmd_pool: ash::vk::CommandPool,
+    swapchain_devext: ash::khr::swapchain::Device,
+    swapchain: VulkanSwapchainState,
+    frame_index: u32,
+    acquired_image: u32,
+    image_count: u32,
+    cmd_buffers: Vec<CommandBuffer>,
+}
+
+impl PresentationState {
+    fn create(
+        device: &ash::Device,
+        swapchain_devext: ash::khr::swapchain::Device,
+        swapchain: VulkanSwapchainState,
+        image_count: u32,
+    ) -> std::result::Result<PresentationState, GraphicsError> {
+        let cmd_pool = unsafe {
+            device
+                .create_command_pool(
+                    &ash::vk::CommandPoolCreateInfo::default()
+                        .queue_family_index(0)
+                        .flags(
+                            ash::vk::CommandPoolCreateFlags::TRANSIENT
+                                | ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                        ),
+                    None,
+                )
+                .map_err(|e| GraphicsError::from(e))
+        }?;
+
+        let cmd_buffers: Vec<CommandBuffer> = unsafe {
+            device.allocate_command_buffers(
+                &ash::vk::CommandBufferAllocateInfo::default()
+                    .command_pool(cmd_pool)
+                    .command_buffer_count(image_count)
+                    .level(ash::vk::CommandBufferLevel::PRIMARY),
+            )
+        }?;
+
+        Ok(PresentationState {
+            cmd_pool,
+            swapchain_devext,
+            swapchain,
+            frame_index: 0u32,
+            acquired_image: 0u32,
+            image_count,
+            cmd_buffers,
+        })
+    }
+
+    fn destroy(&mut self, device: &ash::Device) {
+        self.swapchain.destroy(device, &self.swapchain_devext);
+        unsafe {
+            device.destroy_command_pool(self.cmd_pool, None);
+        }
+    }
+}
+
+pub struct VulkanSwapchainState {
+    pub swapchain: ash::vk::SwapchainKHR,
+    pub images: Vec<Image>,
+    pub image_views: Vec<ImageView>,
+    pub framebuffers: Vec<Framebuffer>,
+    pub depth_stencil: Vec<(Image, DeviceMemory)>,
+    pub depth_stencil_views: Vec<ImageView>,
+    pub work_fences: Vec<Fence>,
+    pub sem_work_done: Vec<Semaphore>,
+    pub sem_image_available: Vec<Semaphore>,
+}
+
+impl VulkanSwapchainState {
+    pub fn create(
+        ext: &ash::khr::swapchain::Device,
+        previous_swapchain: Option<ash::vk::SwapchainKHR>,
+        surface: &VulkanSurfaceState,
+        device: &ash::Device,
+        memory_properties: &ash::vk::PhysicalDeviceMemoryProperties,
+        renderstate: RenderState,
+        swapchain_image_count: u32,
+    ) -> std::result::Result<VulkanSwapchainState, GraphicsError> {
+        log::info!("Recreating swapchain, retired swapchain {previous_swapchain:?}");
+
+        let swapchain = unsafe {
+            ext.create_swapchain(
+                &ash::vk::SwapchainCreateInfoKHR::default()
+                    .surface(surface.surface.surface)
+                    .min_image_count(swapchain_image_count)
+                    .image_format(surface.format.format)
+                    .image_color_space(surface.format.color_space)
+                    .image_extent(surface.caps.current_extent)
+                    .image_array_layers(1)
+                    .image_usage(ImageUsageFlags::COLOR_ATTACHMENT)
+                    .image_sharing_mode(SharingMode::EXCLUSIVE)
+                    .composite_alpha(ash::vk::CompositeAlphaFlagsKHR::OPAQUE)
+                    .pre_transform(surface.caps.current_transform)
+                    .old_swapchain(
+                        previous_swapchain.unwrap_or_else(|| ash::vk::SwapchainKHR::null()),
+                    )
+                    .present_mode(surface.present_mode),
+                None,
+            )
+        }?;
+
+        log::info!("Created swapchain {swapchain:p}");
+
+        let images = unsafe { ext.get_swapchain_images(swapchain) }?;
+        let image_count = images.len();
+
+        let image_views: Vec<ImageView> = Result::from_iter(
+            images
+                .iter()
+                .map(|img| unsafe {
+                    device.create_image_view(
+                        &ImageViewCreateInfo::default()
+                            .image(*img)
+                            .view_type(ImageViewType::TYPE_2D)
+                            .format(surface.format.format)
+                            .components(ash::vk::ComponentMapping::default())
                             .subresource_range(
-                                *ImageSubresourceRange::builder()
+                                ImageSubresourceRange::default()
                                     .aspect_mask(ImageAspectFlags::COLOR)
                                     .base_mip_level(0)
                                     .level_count(1)
                                     .base_array_layer(0)
                                     .layer_count(1),
-                            )]),
-                );
-            },
-        }
+                            ),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )?;
 
-        unsafe {
-            self.device_state
-                .device
-                .end_command_buffer(self.swapchain.cmd_buffers[self.swapchain.frame_index as usize])
-                .expect("Failed to end command buffer");
-        }
+        let framebuffers: Vec<ash::vk::Framebuffer> = match renderstate {
+            RenderState::Dynamic { .. } => vec![],
+            RenderState::Renderpass(pass) => Result::from_iter(
+                image_views
+                    .iter()
+                    .map(|&img_view| unsafe {
+                        device.create_framebuffer(
+                            &ash::vk::FramebufferCreateInfo::default()
+                                .render_pass(pass)
+                                .attachments(&[img_view])
+                                .width(surface.caps.current_extent.width)
+                                .height(surface.caps.current_extent.height)
+                                .layers(1),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )?,
+        };
 
         //
-        // submit
+        // create depth stencil images and image views
+        let depth_stencil: Vec<(Image, DeviceMemory)> = Result::from_iter(
+            image_views
+                .iter()
+                .map(|_| -> Result<(Image, DeviceMemory), ash::vk::Result> {
+                    let depth_stencil_image = unsafe {
+                        device.create_image(
+                            &ImageCreateInfo::default()
+                                .image_type(ImageType::TYPE_2D)
+                                .format(surface.depth_format)
+                                .extent(Extent3D {
+                                    width: surface.caps.current_extent.width,
+                                    height: surface.caps.current_extent.height,
+                                    depth: 1,
+                                })
+                                .mip_levels(1)
+                                .array_layers(1)
+                                .samples(ash::vk::SampleCountFlags::TYPE_1)
+                                .tiling(ImageTiling::OPTIMAL)
+                                .usage(ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                                .sharing_mode(SharingMode::EXCLUSIVE)
+                                .initial_layout(ImageLayout::UNDEFINED),
+                            None,
+                        )
+                    }?;
+
+                    let image_mem_req =
+                        unsafe { device.get_image_memory_requirements(depth_stencil_image) };
+
+                    let depth_stencil_memory = unsafe {
+                        device.allocate_memory(
+                            &MemoryAllocateInfo::default()
+                                .allocation_size(image_mem_req.size)
+                                .memory_type_index(choose_memory_heap(
+                                    &image_mem_req,
+                                    MemoryPropertyFlags::DEVICE_LOCAL,
+                                    &memory_properties,
+                                )),
+                            None,
+                        )
+                    }?;
+
+                    unsafe {
+                        device.bind_image_memory(depth_stencil_image, depth_stencil_memory, 0)?;
+                    }
+
+                    Ok((depth_stencil_image, depth_stencil_memory))
+                })
+                .collect::<Vec<_>>(),
+        )?;
+
+        let depth_stencil_views: Vec<ImageView> = Result::from_iter(
+            depth_stencil
+                .iter()
+                .map(|&(image, _)| unsafe {
+                    device.create_image_view(
+                        &ImageViewCreateInfo::default()
+                            .image(image)
+                            .view_type(ImageViewType::TYPE_2D)
+                            .format(surface.depth_format)
+                            .components(ash::vk::ComponentMapping::default())
+                            .subresource_range(
+                                ImageSubresourceRange::default()
+                                    .aspect_mask(
+                                        ImageAspectFlags::DEPTH | ImageAspectFlags::STENCIL,
+                                    )
+                                    .base_mip_level(0)
+                                    .level_count(1)
+                                    .base_array_layer(0)
+                                    .layer_count(1),
+                            ),
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )?;
+
+        Ok(VulkanSwapchainState {
+            swapchain,
+            images,
+            image_views,
+            framebuffers,
+            depth_stencil,
+            depth_stencil_views,
+
+            work_fences: Result::from_iter(
+                (0..image_count)
+                    .map(|_| unsafe {
+                        device.create_fence(
+                            &ash::vk::FenceCreateInfo::default()
+                                .flags(ash::vk::FenceCreateFlags::SIGNALED),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )?,
+
+            sem_work_done: Result::from_iter(
+                (0..image_count)
+                    .map(|_| unsafe {
+                        device.create_semaphore(&ash::vk::SemaphoreCreateInfo::default(), None)
+                    })
+                    .collect::<Vec<_>>(),
+            )?,
+
+            sem_image_available: Result::from_iter(
+                (0..image_count)
+                    .map(|_| unsafe {
+                        device.create_semaphore(&ash::vk::SemaphoreCreateInfo::default(), None)
+                    })
+                    .collect::<Vec<_>>(),
+            )?,
+        })
+    }
+
+    fn destroy(&mut self, device: &ash::Device, swapchain_ext: &ash::khr::swapchain::Device) {
+        self.image_views
+            .iter()
+            .for_each(|&view| unsafe { device.destroy_image_view(view, None) });
+        self.framebuffers
+            .iter()
+            .for_each(|&fb| unsafe { device.destroy_framebuffer(fb, None) });
+        self.depth_stencil.iter().for_each(|(ds, mem)| unsafe {
+            device.destroy_image(*ds, None);
+            device.free_memory(*mem, None);
+        });
+        self.depth_stencil_views.iter().for_each(|&view| unsafe {
+            device.destroy_image_view(view, None);
+        });
+        self.work_fences
+            .iter()
+            .for_each(|&fence| unsafe { device.destroy_fence(fence, None) });
+        self.sem_work_done
+            .iter()
+            .chain(self.sem_image_available.iter())
+            .for_each(|&sem| unsafe {
+                device.destroy_semaphore(sem, None);
+            });
         unsafe {
-            self.device_state
-                .device
-                .queue_submit2(
-                    queue,
-                    &[*SubmitInfo2::builder()
-                        .wait_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
-                            .semaphore(
-                                self.swapchain.sem_img_available
-                                    [self.swapchain.frame_index as usize],
-                            )
-                            .stage_mask(PipelineStageFlags2::TOP_OF_PIPE)])
-                        .signal_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
-                            .semaphore(
-                                self.swapchain.sem_work_done[self.swapchain.frame_index as usize],
-                            )
-                            .stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)])
-                        .command_buffer_infos(&[*CommandBufferSubmitInfo::builder()
-                            .command_buffer(
-                                self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
-                            )])],
-                    self.swapchain.work_fences[self.swapchain.frame_index as usize],
-                )
-                // .queue_submit(
-                //     queue,
-                //     &[*SubmitInfo::builder()
-                //         .command_buffers(&[
-                //             self.swapchain.cmd_buffers[self.swapchain.frame_index as usize]
-                //         ])
-                //         .wait_semaphores(&[
-                //             self.swapchain.sem_img_available[self.swapchain.frame_index as usize]
-                //         ])
-                //         .wait_dst_stage_mask(&[PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT])
-                //         .signal_semaphores(&[
-                //             self.swapchain.sem_work_done[self.swapchain.frame_index as usize]
-                //         ])],
-                //     self.swapchain.work_fences[self.swapchain.frame_index as usize],
-                // )
-                .expect("Failed to submit work");
-
-            match self.swapchain.ext.queue_present(
-                queue,
-                &PresentInfoKHR::builder()
-                    .image_indices(&[frame_ctx.acquired_swapchain_image])
-                    .swapchains(&[self.swapchain.swapchain])
-                    .wait_semaphores(&[
-                        self.swapchain.sem_work_done[self.swapchain.frame_index as usize]
-                    ]),
-            ) {
-                Err(e) => {
-                    if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
-                        || e == ash::vk::Result::SUBOPTIMAL_KHR
-                    {
-                        log::info!("Swapchain out of date, recreating ...");
-                        self.handle_surface_size_changed(frame_ctx.fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
-                    } else {
-                        log::error!("Present error: {:?}", e);
-                        todo!("Handle this ...");
-                    }
-                }
-                Ok(suboptimal) => {
-                    if suboptimal {
-                        log::info!("Swapchain suboptimal, recreating ...");
-                        self.handle_surface_size_changed(frame_ctx.fb_size);
-                        self.swapchain
-                            .handle_suboptimal(&self.device_state, self.renderstate);
-                    } else {
-                    }
-                }
-            }
-
-            self.swapchain.frame_index =
-                (self.swapchain.frame_index + 1) % self.swapchain.max_frames;
+            swapchain_ext.destroy_swapchain(self.swapchain, None);
         }
     }
 
-    pub fn handle_surface_size_changed(&mut self, surface_size: Extent2D) {
-        self.device_state.surface.caps = Self::get_surface_capabilities(
-            self.device_state.physical.device,
-            self.device_state.surface.khr.surface,
-            &self.device_state.surface.khr.ext,
-            (surface_size.width, surface_size.height),
-        )
-        .expect("Failed to query surface capabilities");
-        log::info!(
-            "Surface extent {:?}",
-            self.device_state.surface.caps.current_extent
-        );
-    }
-
-    fn get_surface_capabilities(
-        phys_device: PhysicalDevice,
-        surface: SurfaceKHR,
-        surface_ext: &ash::extensions::khr::Surface,
-        screen_size: (u32, u32),
-    ) -> VkResult<ash::vk::SurfaceCapabilitiesKHR> {
-        unsafe { surface_ext.get_physical_device_surface_capabilities(phys_device, surface) }.map(
-            |surface_caps| {
-                let current_extent = if surface_caps.current_extent.width == std::u32::MAX
-                    || surface_caps.current_extent.height == std::u32::MAX
-                {
-                    //
-                    // width and height determined by the swapchain's extent
-                    ash::vk::Extent2D {
-                        width: screen_size.0,
-                        height: screen_size.1,
-                    }
-                } else {
-                    surface_caps.current_extent
-                };
-
-                let max_image_count = if surface_caps.max_image_count == 0 {
-                    //
-                    // no limit on the number of images
-                    (surface_caps.min_image_count as f32 * 1.5f32).ceil() as u32
-                } else {
-                    (surface_caps.min_image_count + 2).min(surface_caps.max_image_count)
-                };
-
-                log::info!(
-                    "Surface caps: extent: {:?}, image count {}",
-                    current_extent,
-                    max_image_count
-                );
-
-                ash::vk::SurfaceCapabilitiesKHR {
-                    max_image_count,
-                    current_extent,
-                    ..surface_caps
-                }
-            },
-        )
-    }
+    //
+    //     pub fn handle_suboptimal(&mut self, ds: &VulkanDeviceState, renderpass: RenderState) {
+    //         unsafe {
+    //             // ds.device
+    //             //     .device_wait_idle()
+    //             //     .expect("Failed to wait for device idle");
+    //         }
+    //
+    //         let (
+    //             swapchain,
+    //             images,
+    //             mut image_views,
+    //             mut framebuffers,
+    //             mut depth_stencil,
+    //             mut depth_stencil_views,
+    //         ) = Self::create_swapchain(
+    //             &self.ext,
+    //             Some(std::mem::take(&mut self.swapchain)),
+    //             &ds.surface,
+    //             &ds.device,
+    //             &ds.physical,
+    //             renderpass,
+    //         );
+    //
+    //         self.swapchain = swapchain;
+    //         self.images = images;
+    //
+    //         std::mem::swap(&mut self.image_views, &mut image_views);
+    //         image_views.into_iter().for_each(|img_view| unsafe {
+    //             ds.device.destroy_image_view(img_view, None);
+    //         });
+    //
+    //         std::mem::swap(&mut self.framebuffers, &mut framebuffers);
+    //         framebuffers.into_iter().for_each(|fb| unsafe {
+    //             ds.device.destroy_framebuffer(fb, None);
+    //         });
+    //
+    //         std::mem::swap(&mut self.depth_stencil_views, &mut depth_stencil_views);
+    //         depth_stencil_views.into_iter().for_each(|view| unsafe {
+    //             ds.device.destroy_image_view(view, None);
+    //         });
+    //
+    //         std::mem::swap(&mut self.depth_stencil, &mut depth_stencil);
+    //         depth_stencil
+    //             .into_iter()
+    //             .for_each(|(image, device_mem)| unsafe {
+    //                 ds.device.free_memory(device_mem, None);
+    //                 ds.device.destroy_image(image, None);
+    //             });
+    //
+    //         self.frame_index = 0;
+    //
+    //         let (mut fences, mut work_done, mut img_avail) =
+    //             Self::create_sync_objects(&ds.device, self.max_frames);
+    //
+    //         std::mem::swap(&mut self.work_fences, &mut fences);
+    //         fences.into_iter().for_each(|fence| unsafe {
+    //             ds.device.destroy_fence(fence, None);
+    //         });
+    //
+    //         std::mem::swap(&mut self.sem_work_done, &mut work_done);
+    //         work_done.into_iter().for_each(|s| unsafe {
+    //             ds.device.destroy_semaphore(s, None);
+    //         });
+    //
+    //         std::mem::swap(&mut self.sem_image_available, &mut img_avail);
+    //         img_avail.into_iter().for_each(|s| unsafe {
+    //             ds.device.destroy_semaphore(s, None);
+    //         });
+    //     }
 }
 
+//
+//     pub fn end_rendering(&mut self, frame_ctx: FrameRenderContext) {
+//         let (qid, queue, cmd_pool, _, _) = self.device_state.queue_data(QueueType::Graphics);
+//         //
+//         // end command buffer + renderpass
+//         match self.renderstate {
+//             RenderState::Renderpass(_) => unsafe {
+//                 self.device_state
+//                     .device
+//                     .cmd_end_render_pass(frame_ctx.cmd_buff);
+//             },
+//             RenderState::Dynamic { .. } => unsafe {
+//                 self.device_state
+//                     .device
+//                     .cmd_end_rendering(frame_ctx.cmd_buff);
+//                 //
+//                 // transition image from attachment optimal to SRC_PRESENT
+//                 self.device_state.device.cmd_pipeline_barrier2(
+//                     frame_ctx.cmd_buff,
+//                     &DependencyInfo::builder()
+//                         .dependency_flags(DependencyFlags::BY_REGION)
+//                         .image_memory_barriers(&[*ImageMemoryBarrier2::builder()
+//                             .src_stage_mask(PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+//                             .src_access_mask(AccessFlags2::COLOR_ATTACHMENT_WRITE)
+//                             .dst_stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)
+//                             .dst_access_mask(AccessFlags2::MEMORY_READ)
+//                             .old_layout(ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+//                             .new_layout(ImageLayout::PRESENT_SRC_KHR)
+//                             .src_queue_family_index(qid)
+//                             .dst_queue_family_index(qid)
+//                             .image(
+//                                 self.swapchain.images[frame_ctx.acquired_swapchain_image as usize],
+//                             )
+//                             .subresource_range(
+//                                 *ImageSubresourceRange::builder()
+//                                     .aspect_mask(ImageAspectFlags::COLOR)
+//                                     .base_mip_level(0)
+//                                     .level_count(1)
+//                                     .base_array_layer(0)
+//                                     .layer_count(1),
+//                             )]),
+//                 );
+//             },
+//         }
+//
+//         unsafe {
+//             self.device_state
+//                 .device
+//                 .end_command_buffer(self.swapchain.cmd_buffers[self.swapchain.frame_index as usize])
+//                 .expect("Failed to end command buffer");
+//         }
+//
+//         //
+//         // submit
+//         unsafe {
+//             self.device_state
+//                 .device
+//                 .queue_submit2(
+//                     queue,
+//                     &[*SubmitInfo2::builder()
+//                         .wait_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
+//                             .semaphore(
+//                                 self.swapchain.sem_image_available
+//                                     [self.swapchain.frame_index as usize],
+//                             )
+//                             .stage_mask(PipelineStageFlags2::TOP_OF_PIPE)])
+//                         .signal_semaphore_infos(&[*SemaphoreSubmitInfo::builder()
+//                             .semaphore(
+//                                 self.swapchain.sem_work_done[self.swapchain.frame_index as usize],
+//                             )
+//                             .stage_mask(PipelineStageFlags2::BOTTOM_OF_PIPE)])
+//                         .command_buffer_infos(&[*CommandBufferSubmitInfo::builder()
+//                             .command_buffer(
+//                                 self.swapchain.cmd_buffers[self.swapchain.frame_index as usize],
+//                             )])],
+//                     self.swapchain.work_fences[self.swapchain.frame_index as usize],
+//                 )
+//                 .expect("Failed to submit work");
+//
+//             let present_result = self.swapchain.ext.queue_present(
+//                 queue,
+//                 &PresentInfoKHR::builder()
+//                     .image_indices(&[frame_ctx.acquired_swapchain_image])
+//                     .swapchains(&[self.swapchain.swapchain])
+//                     .wait_semaphores(&[
+//                         self.swapchain.sem_work_done[self.swapchain.frame_index as usize]
+//                     ]),
+//             );
+//
+//             self.swapchain.frame_index =
+//                 (self.swapchain.frame_index + 1) % self.swapchain.max_frames;
+//
+//             match present_result {
+//                 Err(e) => {
+//                     if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
+//                         || e == ash::vk::Result::SUBOPTIMAL_KHR
+//                     {
+//                         log::info!("Swapchain out of date, recreating ...");
+//                         self.handle_surface_size_changed(frame_ctx.fb_size);
+//                         self.swapchain
+//                             .handle_suboptimal(&self.device_state, self.renderstate);
+//                     } else {
+//                         log::error!("Present error: {:?}", e);
+//                         todo!("Handle this ...");
+//                     }
+//                 }
+//                 Ok(suboptimal) => {
+//                     if suboptimal {
+//                         log::info!("Swapchain suboptimal, recreating ...");
+//                         self.handle_surface_size_changed(frame_ctx.fb_size);
+//                         self.swapchain
+//                             .handle_suboptimal(&self.device_state, self.renderstate);
+//                     } else {
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//
+//     pub fn handle_surface_size_changed(&mut self, surface_size: Extent2D) {
+//         self.device_state.surface.caps = Self::get_surface_capabilities(
+//             self.device_state.physical.device,
+//             self.device_state.surface.khr.surface,
+//             &self.device_state.surface.khr.ext,
+//             (surface_size.width, surface_size.height),
+//         )
+//         .expect("Failed to query surface capabilities");
+//         log::info!(
+//             "Surface extent {:?}",
+//             self.device_state.surface.caps.current_extent
+//         );
+//     }
+//
+//
+
+#[derive(Copy, Clone)]
 pub struct FrameRenderContext {
-    pub cmd_buff: CommandBuffer,
-    pub fb_size: Extent2D,
+    pub cmd_buff: ash::vk::CommandBuffer,
+    pub fb_size: ash::vk::Extent2D,
     pub current_frame_id: u32,
     pub acquired_swapchain_image: u32,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, enum_iterator::Sequence)]
-#[repr(u8)]
-pub enum BindlessResourceType {
-    UniformBuffer,
-    Ssbo,
-    CombinedImageSampler,
-}
-
-impl BindlessResourceType {
-    fn as_vk_type(&self) -> ash::vk::DescriptorType {
-        match self {
-            BindlessResourceType::Ssbo => DescriptorType::STORAGE_BUFFER,
-            BindlessResourceType::CombinedImageSampler => DescriptorType::COMBINED_IMAGE_SAMPLER,
-            BindlessResourceType::UniformBuffer => DescriptorType::UNIFORM_BUFFER,
-        }
-    }
-}
-
-// #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-// pub struct BindlessResourceHandle(u32);
 //
-// impl BindlessResourceHandle {
-//     pub fn get_type(&self) -> BindlessResourceType {
-//         let bits = self.0 & 0b11;
-//         match bits {
-//             0 => BindlessResourceType::Ssbo,
-//             1 => BindlessResourceType::CombinedImageSampler,
-//             2 => BindlessResourceType::UniformBuffer,
-//             _ => todo!("Handle this"),
-//         }
-//     }
+// pub mod misc {
+//     pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
+//         use std::io::Write;
+//         let mut f = std::fs::File::create(file).unwrap();
 //
-//     pub fn get_id(&self) -> u32 {
-//         self.0 >> 2
-//     }
-//
-//     pub fn offset(&self, frame: u32) -> BindlessResourceHandle {
-//         Self::new(self.get_type(), self.get_id() + frame)
-//     }
-//
-//     pub fn new(ty: BindlessResourceType, id: u32) -> Self {
-//         match ty {
-//             BindlessResourceType::Ssbo => Self(id << 2),
-//             BindlessResourceType::CombinedImageSampler => Self(1 | (id << 2)),
-//             BindlessResourceType::UniformBuffer => Self(2 | (id << 2)),
-//         }
+//         writeln!(&mut f, "P3 {width} {height} 255").unwrap();
+//         pixels.chunks(4).for_each(|c| {
+//             writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
+//         });
 //     }
 // }
-
-/// Format is
-/// [0..4] frame id [5 .. 15] buffer id
-pub struct GlobalPushConstant(u32);
-
-impl GlobalPushConstant {
-    pub fn from_resource<T>(resource: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
-        GlobalPushConstant(resource.handle() | frame_id << 20)
-    }
-
-    pub fn to_gpu(&self) -> [u8; 4] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl std::convert::AsRef<[u8]> for GlobalPushConstant {
-    fn as_ref(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(&self.0 as *const _ as *const u8, std::mem::size_of::<u32>())
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessResourceHandleCore<T> {
-    id: u32,
-    _marker: std::marker::PhantomData<T>,
-}
-
-impl<T> BindlessResourceHandleCore<T> {
-    const HANDLE_MASK: u32 = 0b000000000000_1111_1111_1111_1111_1111;
-    const ELEMENT_MASK: u32 = 0b00000000000000000000_1111_1111_1111;
-
-    pub fn new(resource: u32, array_elements: u32) -> Self {
-        assert!(resource < 1048576);
-        assert!(array_elements < 4096);
-        Self {
-            id: (resource & Self::HANDLE_MASK) | (array_elements << 20),
-            _marker: std::marker::PhantomData {},
-        }
-    }
-
-    pub fn handle(&self) -> u32 {
-        self.id & Self::HANDLE_MASK
-    }
-
-    pub fn array_elements(&self) -> u32 {
-        (self.id >> 20) & Self::ELEMENT_MASK
-    }
-
-    pub fn element_handle(&self, index: usize) -> Self {
-        let elements = self.array_elements();
-        assert!(index < elements as usize);
-
-        Self::new(self.handle() + index as u32, 1)
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TagUniformBufferResource {}
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TagStorageBufferResource {}
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TagImageResource {}
-
-pub type BindlessUniformBufferHandle = BindlessResourceHandleCore<TagUniformBufferResource>;
-pub type BindlessStoragebufferHandle = BindlessResourceHandleCore<TagStorageBufferResource>;
-pub type BindlessImageHandle = BindlessResourceHandleCore<TagImageResource>;
-
-/// Either SBO or UBO
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessResourceEntryBuffer {
-    pub buffer: ash::vk::Buffer,
-    pub devmem: ash::vk::DeviceMemory,
-    pub aligned_slab_size: usize,
-}
-
-impl std::default::Default for BindlessResourceEntryBuffer {
-    fn default() -> Self {
-        Self {
-            buffer: ash::vk::Buffer::null(),
-            devmem: ash::vk::DeviceMemory::null(),
-            aligned_slab_size: 0,
-        }
-    }
-}
-
-/// Image + view
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessResourceEntryImage {
-    pub image: ash::vk::Image,
-    pub devmem: ash::vk::DeviceMemory,
-    pub view: ash::vk::ImageView,
-    pub info: VulkanTextureInfo,
-}
-
-impl std::default::Default for BindlessResourceEntryImage {
-    fn default() -> Self {
-        Self {
-            image: ash::vk::Image::null(),
-            devmem: ash::vk::DeviceMemory::null(),
-            view: ash::vk::ImageView::null(),
-            info: VulkanTextureInfo::default(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessUniformBufferResourceHandleEntryPair(
-    pub BindlessUniformBufferHandle,
-    pub BindlessResourceEntryBuffer,
-);
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessStorageBufferResourceHandleEntryPair(
-    pub BindlessStoragebufferHandle,
-    pub BindlessResourceEntryBuffer,
-);
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct BindlessImageResourceHandleEntryPair(
-    pub BindlessImageHandle,
-    pub BindlessResourceEntryImage,
-);
-
-pub struct BindlessResourceSystem {
-    dpool: DescriptorPool,
-    set_layouts: Vec<DescriptorSetLayout>,
-    descriptor_sets: Vec<DescriptorSet>,
-    bindless_pipeline_layout: PipelineLayout,
-
-    ubo_pending_writes: Vec<(u32, DescriptorBufferInfo)>,
-    ssbo_pending_writes: Vec<(u32, DescriptorBufferInfo)>,
-    cso_pending_writes: Vec<(u32, DescriptorImageInfo)>,
-
-    storage_buffers: Vec<BindlessResourceEntryBuffer>,
-    uniform_buffers: Vec<BindlessResourceEntryBuffer>,
-    combined_samplers: Vec<BindlessResourceEntryImage>,
-
-    sbo_free_slot: std::sync::atomic::AtomicU32,
-    ubo_free_slot: std::sync::atomic::AtomicU32,
-    cso_free_slot: std::sync::atomic::AtomicU32,
-}
-
-impl BindlessResourceSystem {
-    pub fn descriptor_sets(&self) -> &[DescriptorSet] {
-        &self.descriptor_sets
-    }
-    pub fn pipeline_layout(&self) -> PipelineLayout {
-        self.bindless_pipeline_layout
-    }
-
-    pub fn new(vks: &VulkanRenderer) -> Result<Self, GraphicsError> {
-        let dpool_sizes = [
-            *DescriptorPoolSize::builder()
-                .ty(DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(1024),
-            *DescriptorPoolSize::builder()
-                .ty(DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(1024),
-            *DescriptorPoolSize::builder()
-                .ty(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1024),
-        ];
-
-        let dpool = unsafe {
-            vks.device_state.device.create_descriptor_pool(
-                &*DescriptorPoolCreateInfo::builder()
-                    .flags(ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
-                    .pool_sizes(&dpool_sizes)
-                    .max_sets(1024),
-                None,
-            )
-        }?;
-
-        use enum_iterator::all;
-
-        let set_layouts = all::<BindlessResourceType>()
-            .map(|res_type| {
-                unsafe {
-                    let mut flag_info =
-                        *ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo::builder()
-                            .binding_flags(&[ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND]);
-
-                    let dcount = match res_type {
-                        BindlessResourceType::UniformBuffer => 8,
-                        _ => 1024,
-                    };
-
-                    vks.device_state.device.create_descriptor_set_layout(
-                        &DescriptorSetLayoutCreateInfo::builder()
-                            .push_next(&mut flag_info)
-                            .flags(ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
-                            .bindings(&[*ash::vk::DescriptorSetLayoutBinding::builder()
-                                .descriptor_count(dcount)
-                                .binding(0)
-                                .descriptor_type(res_type.as_vk_type())
-                                .stage_flags(ash::vk::ShaderStageFlags::ALL)]),
-                        None,
-                    )
-                }
-                .expect("Failed to create layout")
-            })
-            .collect::<Vec<_>>();
-
-        let descriptor_sets = unsafe {
-            vks.device_state.device.allocate_descriptor_sets(
-                &DescriptorSetAllocateInfo::builder()
-                    .descriptor_pool(dpool)
-                    .set_layouts(&set_layouts),
-            )
-        }?;
-
-        let bindless_pipeline_layout = unsafe {
-            vks.device_state.device.create_pipeline_layout(
-                &PipelineLayoutCreateInfo::builder()
-                    .set_layouts(&set_layouts)
-                    .push_constant_ranges(&[*PushConstantRange::builder()
-                        .stage_flags(ShaderStageFlags::ALL)
-                        .offset(0)
-                        .size(size_of::<u32>() as _)]),
-                None,
-            )
-        }?;
-
-        Ok(Self {
-            dpool,
-            set_layouts,
-            descriptor_sets,
-            bindless_pipeline_layout,
-            ssbo_pending_writes: vec![],
-            ubo_pending_writes: vec![],
-            cso_pending_writes: vec![],
-
-            storage_buffers: vec![],
-            uniform_buffers: vec![],
-            combined_samplers: vec![],
-
-            sbo_free_slot: AtomicU32::new(0),
-            ubo_free_slot: AtomicU32::new(0),
-            cso_free_slot: AtomicU32::new(0),
-        })
-    }
-
-    pub fn register_uniform_buffer(
-        &mut self,
-        ubo: VulkanBuffer,
-        slot: Option<u32>,
-    ) -> BindlessUniformBufferResourceHandleEntryPair {
-        let global_entry = slot.unwrap_or_else(|| {
-            self.ubo_free_slot
-                .fetch_add(ubo.slabs as u32, std::sync::atomic::Ordering::Acquire)
-        });
-
-        if global_entry >= self.uniform_buffers.len() as u32 {
-            self.uniform_buffers.resize(
-                global_entry as usize + 1,
-                BindlessResourceEntryBuffer::default(),
-            );
-        }
-
-        let bindless_handle = BindlessUniformBufferHandle::new(global_entry, ubo.slabs as u32);
-
-        self.ubo_pending_writes.extend((0..ubo.slabs).map(|i| {
-            (
-                global_entry + i as u32,
-                *DescriptorBufferInfo::builder()
-                    .buffer(ubo.buffer)
-                    .offset((ubo.aligned_slab_size * i) as u64)
-                    .range(ubo.aligned_slab_size as u64),
-            )
-        }));
-
-        let ubo_entry_data = BindlessResourceEntryBuffer {
-            buffer: ubo.buffer,
-            devmem: ubo.memory,
-            aligned_slab_size: ubo.aligned_slab_size,
-        };
-
-        self.uniform_buffers[global_entry as usize] = ubo_entry_data;
-        std::mem::forget(ubo);
-        BindlessUniformBufferResourceHandleEntryPair(bindless_handle, ubo_entry_data)
-    }
-
-    pub fn register_storage_buffer(
-        &mut self,
-        sbo: VulkanBuffer,
-        slot: Option<u32>,
-    ) -> BindlessStorageBufferResourceHandleEntryPair {
-        let global_entry = slot.unwrap_or_else(|| {
-            self.sbo_free_slot
-                .fetch_add(sbo.slabs as u32, std::sync::atomic::Ordering::Acquire)
-        });
-
-        if global_entry >= self.storage_buffers.len() as u32 {
-            self.storage_buffers.resize(
-                global_entry as usize + 1,
-                BindlessResourceEntryBuffer::default(),
-            );
-        }
-
-        let bindless_handle = BindlessStoragebufferHandle::new(global_entry, sbo.slabs as u32);
-
-        self.ssbo_pending_writes.extend((0..sbo.slabs).map(|i| {
-            (
-                global_entry + i as u32,
-                *DescriptorBufferInfo::builder()
-                    .buffer(sbo.buffer)
-                    .offset((i * sbo.aligned_slab_size) as u64)
-                    .range(sbo.aligned_slab_size as u64),
-            )
-        }));
-
-        let sbo_entry_data = BindlessResourceEntryBuffer {
-            buffer: sbo.buffer,
-            devmem: sbo.memory,
-            aligned_slab_size: sbo.aligned_slab_size,
-        };
-
-        self.storage_buffers[global_entry as usize] = sbo_entry_data;
-        std::mem::forget(sbo);
-        BindlessStorageBufferResourceHandleEntryPair(bindless_handle, sbo_entry_data)
-    }
-
-    pub fn register_image(
-        &mut self,
-        image: UniqueImage,
-        sampler: &UniqueSampler,
-        slot: Option<u32>,
-    ) -> BindlessImageResourceHandleEntryPair {
-        let global_entry = slot.unwrap_or_else(|| {
-            self.cso_free_slot
-                .fetch_add(1u32, std::sync::atomic::Ordering::Acquire)
-        });
-
-        if global_entry >= self.combined_samplers.len() as u32 {
-            self.combined_samplers.resize(
-                global_entry as usize + 1,
-                BindlessResourceEntryImage::default(),
-            );
-        }
-
-        let bindless_handle = BindlessImageHandle::new(global_entry, 1);
-        self.cso_pending_writes.push((
-            global_entry,
-            *DescriptorImageInfo::builder()
-                .sampler(sampler.handle)
-                .image_view(image.view)
-                .image_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-        ));
-
-        let cso_entry_data = BindlessResourceEntryImage {
-            image: image.image,
-            devmem: image.memory,
-            view: image.view,
-            info: image.info,
-        };
-
-        self.combined_samplers[global_entry as usize] = cso_entry_data;
-        std::mem::forget(image);
-
-        BindlessImageResourceHandleEntryPair(bindless_handle, cso_entry_data)
-    }
-
-    pub fn flush_pending_updates(&mut self, vks: &VulkanRenderer) {
-        let mut descriptor_writes = Vec::<WriteDescriptorSet>::new();
-
-        dbg!(&self.ubo_pending_writes);
-        descriptor_writes.extend(self.ubo_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
-            *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::UniformBuffer as usize])
-                .dst_binding(0)
-                .dst_array_element(pwrite.0)
-                .descriptor_type(DescriptorType::UNIFORM_BUFFER)
-                .buffer_info(s)
-        }));
-
-        descriptor_writes.extend(self.ssbo_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
-            *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::Ssbo as usize])
-                .dst_binding(0)
-                .dst_array_element(pwrite.0)
-                .descriptor_type(DescriptorType::STORAGE_BUFFER)
-                .buffer_info(s)
-        }));
-
-        descriptor_writes.extend(self.cso_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
-            *WriteDescriptorSet::builder()
-                .dst_set(self.descriptor_sets[BindlessResourceType::CombinedImageSampler as usize])
-                .dst_binding(0)
-                .dst_array_element(pwrite.0)
-                .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .image_info(s)
-        }));
-
-        dbg!(&descriptor_writes);
-
-        unsafe {
-            vks.logical()
-                .update_descriptor_sets(&descriptor_writes, &[]);
-
-            self.ubo_pending_writes.clear();
-            self.ssbo_pending_writes.clear();
-            self.cso_pending_writes.clear();
-        }
-    }
-
-    pub fn bind_descriptors(&self, cmd_buff: CommandBuffer, vks: &VulkanRenderer) {
-        unsafe {
-            vks.logical().cmd_bind_descriptor_sets(
-                cmd_buff,
-                PipelineBindPoint::GRAPHICS,
-                self.bindless_pipeline_layout,
-                0,
-                &self.descriptor_sets,
-                &[],
-            )
-        }
-    }
-}
-
-pub struct InputAssemblyState {
-    pub stride: u32,
-    pub input_rate: VertexInputRate,
-    pub vertex_descriptions: Vec<VertexInputAttributeDescription>,
-}
-
-#[derive(Default)]
-pub struct GraphicsPipelineSetupHelper<'a> {
-    shader_stages: Vec<ShaderSource<'a>>,
-    input_assembly_state: Option<InputAssemblyState>,
-    rasterization_state: Option<PipelineRasterizationStateCreateInfo>,
-    multisample_state: Option<PipelineMultisampleStateCreateInfo>,
-    depth_stencil_state: Option<PipelineDepthStencilStateCreateInfo>,
-    color_blend_state: Option<PipelineColorBlendStateCreateInfo>,
-    dynamic_state: Vec<DynamicState>,
-}
-
-pub struct GraphicsPipelineCreateOptions {
-    pub layout: Option<PipelineLayout>,
-}
-
-impl<'a> GraphicsPipelineSetupHelper<'a> {
-    pub fn new() -> Self {
-        Self {
-            ..Default::default()
-        }
-    }
-
-    pub fn set_input_assembly_state(mut self, state: InputAssemblyState) -> Self {
-        self.input_assembly_state = Some(state);
-        self
-    }
-
-    pub fn add_shader_stage(mut self, stage: ShaderSource<'a>) -> Self {
-        self.shader_stages.push(stage);
-        self
-    }
-
-    pub fn set_raster_state(mut self, raster: PipelineRasterizationStateCreateInfo) -> Self {
-        self.rasterization_state = Some(raster);
-        self
-    }
-
-    pub fn set_multisample_state(mut self, ms: PipelineMultisampleStateCreateInfo) -> Self {
-        self.multisample_state = Some(ms);
-        self
-    }
-
-    pub fn set_depth_stencil_state(mut self, ds: PipelineDepthStencilStateCreateInfo) -> Self {
-        self.depth_stencil_state = Some(ds);
-        self
-    }
-
-    pub fn set_colorblend_state(mut self, cb: PipelineColorBlendStateCreateInfo) -> Self {
-        self.color_blend_state = Some(cb);
-        self
-    }
-
-    pub fn set_dynamic_state(mut self, ds: &[DynamicState]) -> Self {
-        self.dynamic_state.extend(ds.iter());
-        self
-    }
-
-    pub fn create(
-        self,
-        renderer: &VulkanRenderer,
-        options: GraphicsPipelineCreateOptions,
-    ) -> std::result::Result<UniquePipeline, GraphicsError> {
-        assert!(!self.shader_stages.is_empty());
-
-        let mut reflected_vertex_inputs_attribute_descriptions: Option<(
-            u32,
-            Vec<VertexInputAttributeDescription>,
-        )> = None;
-
-        let shader_entry_point = std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap();
-
-        let (shader_modules_data, pipeline_shader_stage_create_info) = {
-            use crate::shader::*;
-
-            let mut module_data: Vec<(UniqueShaderModule, ShaderReflection)> = vec![];
-            let mut shader_stage_create_info: Vec<PipelineShaderStageCreateInfo> = vec![];
-
-            for shader_src in self.shader_stages.into_iter() {
-                let (shader_module, shader_stage, shader_reflection) = compile_and_reflect_shader(
-                    renderer.logical(),
-                    &crate::shader::ShaderCompileInfo {
-                        src: &shader_src,
-                        entry_point: Some("main"),
-                        compile_defs: &[],
-                        optimize: false,
-                        debug_info: true,
-                    },
-                )?;
-
-                dbg!(&shader_reflection);
-
-                shader_stage_create_info.push(
-                    *PipelineShaderStageCreateInfo::builder()
-                        .stage(shader_stage)
-                        .module(*shader_module)
-                        .name(&shader_entry_point),
-                );
-
-                if shader_stage == ShaderStageFlags::VERTEX && !shader_reflection.inputs.is_empty()
-                {
-                    assert!(reflected_vertex_inputs_attribute_descriptions.is_none());
-                    reflected_vertex_inputs_attribute_descriptions = Some((
-                        shader_reflection.inputs_stride,
-                        shader_reflection.inputs.clone(),
-                    ));
-                }
-
-                module_data.push((shader_module, shader_reflection));
-            }
-
-            (module_data, shader_stage_create_info)
-        };
-
-        let pipeline_data = if let Some(layout) = options.layout {
-            PipelineData::Reference { layout }
-        } else {
-            let mut descriptor_set_table =
-                std::collections::HashMap::<u32, DescriptorSetLayoutBinding>::new();
-
-            let mut push_constant_ranges = Vec::<PushConstantRange>::new();
-
-            for (_, reflected_shader) in shader_modules_data.iter() {
-                for (&set_id, set_bindings) in reflected_shader.descriptor_sets.iter() {
-                    if set_bindings.is_empty() {
-                        //
-                        // not used in this stage, ignore it
-                        continue;
-                    }
-
-                    descriptor_set_table
-                        .entry(set_id)
-                        .and_modify(|e| {
-                            if e.descriptor_type == set_bindings[0].descriptor_type {
-                                e.stage_flags |= set_bindings[0].stage_flags;
-                                e.descriptor_count = e.descriptor_count.max(set_bindings[0].descriptor_count);
-                            } else {
-                                panic!("Sets alias to the same slot {set_id} but descriptor types are not compatible {:?}/{:?}",
-                                        e.descriptor_type, set_bindings[0].descriptor_type);
-                            }
-                        })
-                        .or_insert( DescriptorSetLayoutBinding {
-                            descriptor_count: 1024,
-                            ..set_bindings[0]
-                        });
-                }
-
-                push_constant_ranges.extend_from_slice(&reflected_shader.push_constants);
-            }
-
-            let compare_push_consts = |r0: &PushConstantRange, r1: &PushConstantRange| {
-                if r0.stage_flags != r1.stage_flags {
-                    return r0.stage_flags.cmp(&r1.stage_flags);
-                }
-
-                if r0.offset != r1.offset {
-                    return r0.offset.cmp(&r1.offset);
-                }
-
-                r0.size.cmp(&r1.size)
-            };
-
-            push_constant_ranges.sort_by(compare_push_consts);
-            push_constant_ranges
-                .dedup_by(|r0, r1| compare_push_consts(r0, r1) == std::cmp::Ordering::Equal);
-
-            log::info!("pipeline layout definition {descriptor_set_table:?}");
-            log::info!("pipeline push constant ranges {push_constant_ranges:?}");
-
-            let max_set_id = descriptor_set_table
-                .iter()
-                .map(|(set_id, _)| *set_id)
-                .max()
-                .unwrap_or(0);
-
-            //
-            // Plug descriptor set layout holes.
-            // For example a vertex shader might have layout (set = 0, binding = ...)
-            // and the fragment shader might have layout (set = 4, binding = ...)
-            // For sets 1 to 3 we need to create a "null" descriptor set layout with no bindings
-            // and assign it to those slots when creating the pipeline layout.
-
-            let descriptor_set_layout = (0..=max_set_id)
-                .map(|set_id| {
-                    if let Some(set_entry) = descriptor_set_table.get(&set_id) {
-                        let binding_flags = [DescriptorBindingFlags::PARTIALLY_BOUND];
-                        let mut set_layout_binding_flags =
-                            *DescriptorSetLayoutBindingFlagsCreateInfo::builder()
-                                .binding_flags(&binding_flags);
-
-                        unsafe {
-                            renderer
-                                .logical()
-                                .create_descriptor_set_layout(
-                                    &DescriptorSetLayoutCreateInfo::builder()
-                                        .push_next(&mut set_layout_binding_flags)
-                                        .bindings(std::slice::from_raw_parts(
-                                            set_entry as *const _,
-                                            1,
-                                        )),
-                                    None,
-                                )
-                                .expect("Monka mega, need a better way to deal with failure here")
-                        }
-                    } else {
-                        renderer.empty_descriptor_set_layout()
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            PipelineData::Owned {
-                layout: unsafe {
-                    renderer.logical().create_pipeline_layout(
-                        &PipelineLayoutCreateInfo::builder()
-                            .set_layouts(&descriptor_set_layout)
-                            .push_constant_ranges(&push_constant_ranges),
-                        None,
-                    )
-                }?,
-                descriptor_set_layout,
-            }
-        };
-
-        let mut render_state_create_info = match &renderer.renderstate {
-            RenderState::Dynamic {
-                color_attachments,
-                depth_attachments,
-                stencil_attachments,
-            } => *PipelineRenderingCreateInfo::builder()
-                .color_attachment_formats(color_attachments)
-                .depth_attachment_format(depth_attachments[0])
-                .stencil_attachment_format(stencil_attachments[0]),
-            RenderState::Renderpass(_) => *PipelineRenderingCreateInfo::builder(),
-        };
-
-        let input_assembly_state = *ash::vk::PipelineInputAssemblyStateCreateInfo::builder()
-            .topology(ash::vk::PrimitiveTopology::TRIANGLE_LIST);
-
-        let (inputs_stride, input_rate) = self
-            .input_assembly_state
-            .as_ref()
-            .map(|ia| (ia.stride, ia.input_rate))
-            .unwrap_or_else(|| {
-                if let Some((stride, _)) = reflected_vertex_inputs_attribute_descriptions.as_ref() {
-                    (*stride, VertexInputRate::VERTEX)
-                } else {
-                    (0, VertexInputRate::VERTEX)
-                }
-            });
-
-        let std_vertex_binding = [*ash::vk::VertexInputBindingDescription::builder()
-            .stride(inputs_stride)
-            .input_rate(input_rate)
-            .binding(0)];
-
-        let vertex_input_state = self
-            .input_assembly_state
-            .as_ref()
-            .map(|ia| {
-                *PipelineVertexInputStateCreateInfo::builder()
-                    .vertex_attribute_descriptions(&ia.vertex_descriptions)
-                    .vertex_binding_descriptions(&std_vertex_binding)
-            })
-            .unwrap_or_else(|| {
-                reflected_vertex_inputs_attribute_descriptions
-                    .as_ref()
-                    .map_or_else(
-                        || *PipelineVertexInputStateCreateInfo::builder(),
-                        |(_, vertex_inputs)| {
-                            *PipelineVertexInputStateCreateInfo::builder()
-                                .vertex_attribute_descriptions(vertex_inputs)
-                                .vertex_binding_descriptions(&std_vertex_binding)
-                        },
-                    )
-            });
-
-        let rasterization_state = self.rasterization_state.unwrap_or_else(|| {
-            *PipelineRasterizationStateCreateInfo::builder()
-                .polygon_mode(PolygonMode::FILL)
-                .cull_mode(CullModeFlags::BACK)
-                .front_face(FrontFace::COUNTER_CLOCKWISE)
-                .depth_bias_enable(false)
-                .line_width(1f32)
-        });
-
-        let multisample_state = self.multisample_state.unwrap_or_else(|| {
-            *PipelineMultisampleStateCreateInfo::builder()
-                .rasterization_samples(SampleCountFlags::TYPE_1)
-        });
-
-        let depth_stencil_state = self.depth_stencil_state.unwrap_or_else(|| {
-            *PipelineDepthStencilStateCreateInfo::builder()
-                .depth_test_enable(true)
-                .depth_write_enable(true)
-                .depth_compare_op(CompareOp::LESS)
-                .depth_bounds_test_enable(true)
-                .min_depth_bounds(0f32)
-                .max_depth_bounds(1f32)
-        });
-
-        let colorblend_attachments = [*ash::vk::PipelineColorBlendAttachmentState::builder()
-            .blend_enable(false)
-            .src_color_blend_factor(BlendFactor::ONE)
-            .dst_color_blend_factor(BlendFactor::ZERO)
-            .color_blend_op(BlendOp::ADD)
-            .src_alpha_blend_factor(BlendFactor::ONE)
-            .dst_alpha_blend_factor(BlendFactor::ZERO)
-            .alpha_blend_op(BlendOp::ADD)
-            .color_write_mask(
-                ColorComponentFlags::R
-                    | ColorComponentFlags::G
-                    | ColorComponentFlags::B
-                    | ColorComponentFlags::A,
-            )];
-
-        let colorblend_state = self.color_blend_state.unwrap_or_else(|| {
-            *PipelineColorBlendStateCreateInfo::builder()
-                .blend_constants([1f32; 4])
-                .attachments(&colorblend_attachments)
-        });
-
-        let dynamic_state =
-            PipelineDynamicStateCreateInfo::builder().dynamic_states(&self.dynamic_state);
-
-        let viewport_state = *ash::vk::PipelineViewportStateCreateInfo::builder();
-
-        let graphics_pipeline_create_info = {
-            let mut pipeline_create_info = GraphicsPipelineCreateInfo::builder()
-                .input_assembly_state(&input_assembly_state)
-                .stages(&pipeline_shader_stage_create_info)
-                .vertex_input_state(&vertex_input_state)
-                .rasterization_state(&rasterization_state)
-                .multisample_state(&multisample_state)
-                .depth_stencil_state(&depth_stencil_state)
-                .color_blend_state(&colorblend_state)
-                .viewport_state(&viewport_state)
-                .dynamic_state(&dynamic_state)
-                .layout(pipeline_data.layout());
-
-            match renderer.renderstate {
-                RenderState::Renderpass(pass) => {
-                    pipeline_create_info = pipeline_create_info.render_pass(pass).subpass(0);
-                }
-                RenderState::Dynamic { .. } => {
-                    pipeline_create_info =
-                        pipeline_create_info.push_next(&mut render_state_create_info);
-                }
-            }
-
-            *pipeline_create_info
-        };
-
-        let pipeline_handles = unsafe {
-            renderer.logical().create_graphics_pipelines(
-                renderer.pipeline_cache(),
-                std::slice::from_raw_parts(&graphics_pipeline_create_info as *const _, 1),
-                None,
-            )
-        }
-        .map_err(|(_, e)| GraphicsError::VulkanApi(e))?;
-
-        Ok(UniquePipeline {
-            device: renderer.logical_raw(),
-            handle: pipeline_handles[0],
-            data: pipeline_data,
-        })
-    }
-}
-
-// pub struct QueueSubmitToken {
-//     pub cmd_buffer: ash::vk::CommandBuffer,
-//     pub fence: ash::vk::Fence,
-// }
 //
-// impl QueueSubmitToken {
-//     pub fn consume(self, renderer: &mut VulkanRenderer) {
-//         unsafe {
-//             let _ = renderer
-//                 .logical()
-//                 .wait_for_fences(&[self.fence], true, std::u64::MAX);
-//             renderer.logical().destroy_fence(self.fence, None);
-//         }
-//     }
-// }
-
-pub mod misc {
-    pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
-        use std::io::Write;
-        let mut f = std::fs::File::create(file).unwrap();
-
-        writeln!(&mut f, "P3 {width} {height} 255").unwrap();
-        pixels.chunks(4).for_each(|c| {
-            writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
-        });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_bindless_handle() {
-        use super::*;
-
-        let b0 = BindlessStoragebufferHandle::new(9876, 3456);
-        assert_eq!(b0.handle(), 9876);
-        assert_eq!(b0.array_elements(), 3456);
-
-        let b1 = b0.element_handle(1000);
-        assert_eq!(b1.handle(), 10876);
-        assert_eq!(b1.array_elements(), 1);
-    }
-}

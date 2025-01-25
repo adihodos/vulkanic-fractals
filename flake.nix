@@ -58,6 +58,8 @@
           vulkan-loader
           vulkan-tools-lunarg
           vulkan-validation-layers
+          vulkan-caps-viewer
+          vulkan-utility-libraries
           shaderc
           glslang
           xorg.libX11

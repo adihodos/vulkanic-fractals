@@ -21,7 +21,7 @@ pub struct VulkanTextureInfo {
 
 pub struct VulkanImageCreateInfo<'a> {
     pub tag_name: Option<&'a str>,
-    pub work_pkg: &'a QueuedJob,
+    pub work_pkg: Option<&'a QueuedJob>,
     pub ty: ImageType,
     pub usage: ImageUsageFlags,
     pub memory: MemoryPropertyFlags,
@@ -78,7 +78,7 @@ impl UniqueImage {
 
         let image = unsafe {
             renderer.logical().create_image(
-                &ImageCreateInfo::builder()
+                &ImageCreateInfo::default()
                     .image_type(create_info.ty)
                     .format(create_info.format)
                     .extent(ash::vk::Extent3D {
@@ -106,7 +106,7 @@ impl UniqueImage {
         let memory_req = unsafe { renderer.logical().get_image_memory_requirements(image) };
         let image_memory = unsafe {
             renderer.logical().allocate_memory(
-                &ash::vk::MemoryAllocateInfo::builder()
+                &ash::vk::MemoryAllocateInfo::default()
                     .allocation_size(memory_req.size)
                     .memory_type_index(
                         renderer.choose_memory_heap(&memory_req, MemoryPropertyFlags::DEVICE_LOCAL),
@@ -131,88 +131,96 @@ impl UniqueImage {
             .tag_name
             .map(|tag_name| renderer.debug_set_object_name(image, tag_name));
 
-        let (mut staging_ptr, staging_buffer, staging_offset) =
-            renderer.reserve_staging_memory(memory_req.size as usize);
+        let maybe_pixels = if create_info.pixels.is_empty() {
+            Some(())
+        } else {
+            None
+        };
 
-        for p in create_info.pixels {
-            unsafe {
-                std::ptr::copy_nonoverlapping(p.as_ptr(), staging_ptr, p.len());
-                staging_ptr = staging_ptr.offset(p.len() as isize);
+        maybe_pixels.and(create_info.work_pkg).map(|queued_job| {
+            let (mut staging_ptr, staging_buffer, staging_offset) =
+                renderer.reserve_staging_memory(memory_req.size as usize);
+
+            for p in create_info.pixels {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(p.as_ptr(), staging_ptr, p.len());
+                    staging_ptr = staging_ptr.offset(p.len() as isize);
+                }
             }
-        }
 
-        let image_subresource_range = *ImageSubresourceRange::builder()
-            .aspect_mask(ImageAspectFlags::COLOR)
-            .base_mip_level(0)
-            .level_count(1)
-            .base_array_layer(0)
-            .layer_count(create_info.layers);
+            let image_subresource_range = ImageSubresourceRange::default()
+                .aspect_mask(ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(create_info.layers);
 
-        //
-        // set image layout to TRANSFER_DST_OPTIMAL
-        set_image_layout(
-            create_info.work_pkg.cmd_buffer,
-            renderer.logical(),
-            image,
-            ImageLayout::UNDEFINED,
-            ImageLayout::TRANSFER_DST_OPTIMAL,
-            image_subresource_range,
-        );
-
-        unsafe {
-            renderer.logical().cmd_copy_buffer_to_image(
-                create_info.work_pkg.cmd_buffer,
-                staging_buffer,
+            //
+            // set image layout to TRANSFER_DST_OPTIMAL
+            set_image_layout(
+                queued_job.cmd_buffer,
+                renderer.logical(),
                 image,
+                ImageLayout::UNDEFINED,
                 ImageLayout::TRANSFER_DST_OPTIMAL,
-                &[*BufferImageCopy::builder()
-                    .buffer_offset(staging_offset as u64)
-                    .image_subresource(
-                        *ImageSubresourceLayers::builder()
-                            .aspect_mask(ImageAspectFlags::COLOR)
-                            .mip_level(0)
-                            .base_array_layer(0)
-                            .layer_count(create_info.layers),
-                    )
-                    .image_extent(ash::vk::Extent3D {
-                        width: create_info.width,
-                        height: create_info.height,
-                        depth: create_info.depth,
-                    })],
+                image_subresource_range,
             );
-        }
 
-        let (qgraphics, _, _, _, _) = renderer.device_state.queue_data(QueueType::Graphics);
-        let (qtransfer, _, _, _, _) = renderer.device_state.queue_data(QueueType::Transfer);
+            unsafe {
+                renderer.logical().cmd_copy_buffer_to_image(
+                    queued_job.cmd_buffer,
+                    staging_buffer,
+                    image,
+                    ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[BufferImageCopy::default()
+                        .buffer_offset(staging_offset as u64)
+                        .image_subresource(
+                            ImageSubresourceLayers::default()
+                                .aspect_mask(ImageAspectFlags::COLOR)
+                                .mip_level(0)
+                                .base_array_layer(0)
+                                .layer_count(create_info.layers),
+                        )
+                        .image_extent(ash::vk::Extent3D {
+                            width: create_info.width,
+                            height: create_info.height,
+                            depth: create_info.depth,
+                        })],
+                );
+            }
 
-        //
-        // post copy memory barrier for queue ownership transfer
-        unsafe {
-            renderer.logical().cmd_pipeline_barrier2(
-                create_info.work_pkg.cmd_buffer,
-                &DependencyInfo::builder()
-                    .dependency_flags(DependencyFlags::BY_REGION)
-                    .image_memory_barriers(&[*ImageMemoryBarrier2::builder()
-                        .src_access_mask(AccessFlags2::TRANSFER_WRITE)
-                        .src_stage_mask(PipelineStageFlags2::TRANSFER)
-                        .src_queue_family_index(qtransfer)
-                        .dst_queue_family_index(qgraphics)
-                        .image(image)
-                        .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
-                        .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                        .subresource_range(image_subresource_range)]),
-            )
-        }
+            let (qgraphics, _, _, _, _) = renderer.queue_data(QueueType::Graphics);
+            let (qtransfer, _, _, _, _) = renderer.queue_data(QueueType::Transfer);
+
+            //
+            // post copy memory barrier for queue ownership transfer
+            unsafe {
+                renderer.logical().cmd_pipeline_barrier2(
+                    queued_job.cmd_buffer,
+                    &DependencyInfo::default()
+                        .dependency_flags(DependencyFlags::BY_REGION)
+                        .image_memory_barriers(&[ImageMemoryBarrier2::default()
+                            .src_access_mask(AccessFlags2::TRANSFER_WRITE)
+                            .src_stage_mask(PipelineStageFlags2::TRANSFER)
+                            .src_queue_family_index(qtransfer)
+                            .dst_queue_family_index(qgraphics)
+                            .image(image)
+                            .old_layout(ImageLayout::TRANSFER_DST_OPTIMAL)
+                            .new_layout(ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                            .subresource_range(image_subresource_range)]),
+                )
+            }
+        });
 
         let image_view = unsafe {
             renderer.logical().create_image_view(
-                &ImageViewCreateInfo::builder()
+                &ImageViewCreateInfo::default()
                     .image(image)
                     .view_type(image_view_type)
                     .format(create_info.format)
                     .components(ash::vk::ComponentMapping::default())
                     .subresource_range(
-                        *ImageSubresourceRange::builder()
+                        ImageSubresourceRange::default()
                             .aspect_mask(ImageAspectFlags::COLOR)
                             .base_mip_level(0)
                             .level_count(1)
@@ -223,9 +231,9 @@ impl UniqueImage {
             )
         }?;
 
-        log::info!("[[RENDERER]] - new image {} : handle {image:p}, memory {image_memory:p}, view {image_view:p}", create_info.tag_name.unwrap_or_else(|| "anonymous"));
+        log::info!("[[VK]] - new image {} : handle {image:p}, memory {image_memory:p}, view {image_view:p}", create_info.tag_name.unwrap_or_else(|| "anonymous"));
         Ok(UniqueImage {
-            device: renderer.device_raw(),
+            device: renderer.logical_raw(),
             image,
             memory: image_memory,
             view: image_view,
@@ -264,7 +272,7 @@ pub fn set_image_layout(
     unsafe {
         device.cmd_pipeline_barrier2(
             cmd_buffer,
-            &ash::vk::DependencyInfo::builder()
+            &ash::vk::DependencyInfo::default()
                 .dependency_flags(ash::vk::DependencyFlags::BY_REGION)
                 .image_memory_barriers(&[image_layout_memory_barrier(
                     image,
@@ -276,13 +284,13 @@ pub fn set_image_layout(
     }
 }
 
-fn image_layout_memory_barrier(
+fn image_layout_memory_barrier<'a>(
     image: ash::vk::Image,
     previous_layout: ash::vk::ImageLayout,
     new_layout: ash::vk::ImageLayout,
     subresource_range: ash::vk::ImageSubresourceRange,
-) -> ash::vk::ImageMemoryBarrier2 {
-    let mut mem_barrier = *ImageMemoryBarrier2::builder()
+) -> ash::vk::ImageMemoryBarrier2<'a> {
+    let mut mem_barrier = ImageMemoryBarrier2::default()
         .src_stage_mask(PipelineStageFlags2::ALL_COMMANDS)
         .src_access_mask(AccessFlags2::empty())
         .dst_stage_mask(PipelineStageFlags2::ALL_COMMANDS)
@@ -395,4 +403,31 @@ fn image_layout_memory_barrier(
     }
 
     mem_barrier
+}
+
+pub struct UniqueSampler {
+    device: *const ash::Device,
+    pub handle: ash::vk::Sampler,
+}
+
+impl std::ops::Drop for UniqueSampler {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.device).destroy_sampler(self.handle, None);
+        }
+    }
+}
+
+impl UniqueSampler {
+    pub fn new(
+        vks: &VulkanRenderer,
+        create_info: ash::vk::SamplerCreateInfo,
+    ) -> std::result::Result<Self, GraphicsError> {
+        let handle = unsafe { vks.logical().create_sampler(&create_info, None) }?;
+
+        Ok(UniqueSampler {
+            device: vks.logical_raw(),
+            handle,
+        })
+    }
 }

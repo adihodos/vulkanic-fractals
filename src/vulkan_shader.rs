@@ -1,6 +1,27 @@
 #![allow(dead_code)]
 
-use crate::vulkan_renderer::{GraphicsError, UniqueShaderModule};
+use crate::vulkan_renderer::GraphicsError;
+
+pub struct UniqueShaderModule {
+    pub device: *const ash::Device,
+    pub module: ash::vk::ShaderModule,
+}
+
+impl std::ops::Deref for UniqueShaderModule {
+    type Target = ash::vk::ShaderModule;
+
+    fn deref(&self) -> &Self::Target {
+        &self.module
+    }
+}
+
+impl std::ops::Drop for UniqueShaderModule {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.device).destroy_shader_module(self.module, None);
+        }
+    }
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum ShaderKind {
@@ -186,7 +207,7 @@ pub fn compile_shader<'a>(
     let shader_module = UniqueShaderModule {
         module: unsafe {
             device.create_shader_module(
-                &ash::vk::ShaderModuleCreateInfo::builder().code(compiled_bytecode.as_binary()),
+                &ash::vk::ShaderModuleCreateInfo::default().code(compiled_bytecode.as_binary()),
                 None,
             )
         }?,
@@ -227,7 +248,7 @@ pub fn compile_and_reflect_shader<'a>(
     let shader_module = UniqueShaderModule {
         module: unsafe {
             device.create_shader_module(
-                &ash::vk::ShaderModuleCreateInfo::builder().code(compiled_bytecode.as_binary()),
+                &ash::vk::ShaderModuleCreateInfo::default().code(compiled_bytecode.as_binary()),
                 None,
             )
         }?,
@@ -240,11 +261,19 @@ pub fn compile_and_reflect_shader<'a>(
     Ok((shader_module, shader_kind.into(), shader_reflection))
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct DescriptorSetLayoutBindingInfo {
+    pub binding: u32,
+    pub descriptor_type: ash::vk::DescriptorType,
+    pub descriptor_count: u32,
+    pub stage_flags: ash::vk::ShaderStageFlags,
+}
+
 #[derive(Debug)]
 pub struct ShaderReflection {
     pub inputs: Vec<ash::vk::VertexInputAttributeDescription>,
     pub inputs_stride: u32,
-    pub descriptor_sets: std::collections::HashMap<u32, Vec<ash::vk::DescriptorSetLayoutBinding>>,
+    pub descriptor_sets: std::collections::HashMap<u32, Vec<DescriptorSetLayoutBindingInfo>>,
     pub push_constants: Vec<ash::vk::PushConstantRange>,
 }
 
@@ -273,19 +302,18 @@ pub fn reflect_shader_module(
                 descriptor_set
                     .bindings
                     .iter()
-                    .map(|descriptor_binding| {
-                        *ash::vk::DescriptorSetLayoutBinding::builder()
-                            .binding(descriptor_binding.binding)
-                            .descriptor_type(spirv_reflect_descriptor_type_to_vk_descriptor_type(
-                                descriptor_binding.descriptor_type,
-                            ))
-                            .descriptor_count(descriptor_binding.count)
-                            .stage_flags(ash::vk::ShaderStageFlags::ALL)
+                    .map(|descriptor_binding| DescriptorSetLayoutBindingInfo {
+                        binding: descriptor_binding.binding,
+                        descriptor_type: spirv_reflect_descriptor_type_to_vk_descriptor_type(
+                            descriptor_binding.descriptor_type,
+                        ),
+                        descriptor_count: descriptor_binding.count,
+                        stage_flags: ash::vk::ShaderStageFlags::ALL,
                     })
                     .collect::<Vec<_>>(),
             )
         })
-        .collect::<std::collections::HashMap<u32, Vec<ash::vk::DescriptorSetLayoutBinding>>>();
+        .collect::<std::collections::HashMap<u32, Vec<DescriptorSetLayoutBindingInfo>>>();
 
     let (vertex_attribute_descriptions, stride) = {
         let mut bits_offset = 0u32;
@@ -307,7 +335,7 @@ pub fn reflect_shader_module(
                     )
                 })
                 .map(|input_var| {
-                    let attr_desc = *ash::vk::VertexInputAttributeDescription::builder()
+                    let attr_desc = ash::vk::VertexInputAttributeDescription::default()
                         .location(input_var.location)
                         .binding(0)
                         .format(spirv_reflect_format_to_vkformat(input_var.format))
@@ -332,7 +360,7 @@ pub fn reflect_shader_module(
         .map_err(|e| GraphicsError::SpirVReflectionError(e))?
         .iter()
         .map(|push_const| {
-            *ash::vk::PushConstantRange::builder()
+            ash::vk::PushConstantRange::default()
                 .stage_flags(ash::vk::ShaderStageFlags::ALL)
                 .offset(push_const.offset)
                 .size(push_const.size)
