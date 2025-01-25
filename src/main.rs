@@ -1,6 +1,6 @@
 // use ash::vk::{BufferUsageFlags, MemoryPropertyFlags};
 
-use vulkan_renderer::VulkanRenderer;
+use vulkan_renderer::{FrameRenderContext, VulkanRenderer};
 // use fractal::{Julia, Mandelbrot};
 // use ui::UiBackend;
 use winit::{
@@ -100,9 +100,9 @@ fn main() {
     //
     let mut fractal_sim = FractalSimulation::new(&window);
 
-    // event_loop.run(move |event, _, control_flow| {
-    // fractal_sim.handle_event(&window, event, control_flow);
-    // });
+    event_loop.run(move |event, _, control_flow| {
+        fractal_sim.handle_event(&window, event, control_flow);
+    });
 }
 
 pub struct InputState<'a> {
@@ -177,7 +177,7 @@ impl FractalSimulation {
         log::info!("Cursor initial position {:?}", cursor_pos);
 
         let vks = Box::pin(
-            VulkanRenderer::create(get_window_data(window), window.inner_size().into())
+            VulkanRenderer::create(get_window_data(window))
                 .expect("Failed to initialize vulkan ..."),
         );
         //
@@ -224,30 +224,30 @@ impl FractalSimulation {
         }
     }
 
-    // fn begin_rendering(&mut self, window: &winit::window::Window) -> FrameRenderContext {
-    //     let img_size = ash::vk::Extent2D {
-    //         width: window.inner_size().width,
-    //         height: window.inner_size().height,
-    //     };
-    //
-    //     self.vks
-    //         .debug_queue_begin_label("### render start ###", [0f32, 1f32, 0f32, 1f32]);
-    //     let frame_context = self.vks.begin_rendering(img_size);
-    //
-    //     // UniqueBufferMapping::map_memory(
-    //     //     self.vks.logical(),
-    //     //     self.ubo_globals_handle.1.devmem,
-    //     //     self.ubo_globals_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
-    //     //     self.ubo_globals_handle.1.aligned_slab_size,
-    //     // )
-    //     // .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
-    //
-    //     self.bindless_sys.flush_pending_updates(&self.vks);
-    //     self.bindless_sys
-    //         .bind_descriptors(frame_context.cmd_buff, &self.vks);
-    //
-    //     frame_context
-    // }
+    fn begin_rendering(&mut self, window: &winit::window::Window) -> FrameRenderContext {
+        let img_size = ash::vk::Extent2D {
+            width: window.inner_size().width,
+            height: window.inner_size().height,
+        };
+
+        self.vks
+            .debug_queue_begin_label("### render start ###", [0f32, 1f32, 0f32, 1f32]);
+        let frame_context = self.vks.begin_rendering(img_size);
+
+        // UniqueBufferMapping::map_memory(
+        //     self.vks.logical(),
+        //     self.ubo_globals_handle.1.devmem,
+        //     self.ubo_globals_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
+        //     self.ubo_globals_handle.1.aligned_slab_size,
+        // )
+        // .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
+
+        // self.bindless_sys.flush_pending_updates(&self.vks);
+        // self.bindless_sys
+        //     .bind_descriptors(frame_context.cmd_buff, &self.vks);
+
+        frame_context
+    }
 
     // fn setup_ui(&mut self, window: &winit::window::Window) {
     //     let ui = self.ui.new_frame(window);
@@ -342,7 +342,9 @@ impl FractalSimulation {
                 //     cursor_pos: self.cursor_pos,
                 //     control_down: self.control_down,
                 // });
-            } // _ => match self.ftype {
+            }
+
+            // _ => match self.ftype {
             //     FractalType::Julia => {
             //         self.julia.input_handler(&InputState {
             //             window,
@@ -384,7 +386,7 @@ impl FractalSimulation {
             }
 
             Event::MainEventsCleared => {
-                // let frame_context = self.begin_rendering(window);
+                let frame_context = self.begin_rendering(window);
                 //
                 // match self.ftype {
                 //     FractalType::Julia => {
@@ -398,8 +400,8 @@ impl FractalSimulation {
                 // self.setup_ui(window);
                 // self.ui.draw_frame(&self.vks, &frame_context);
                 //
-                // self.vks.end_rendering(frame_context);
-                // self.vks.debug_queue_end_label();
+                self.vks.end_rendering(frame_context);
+                self.vks.debug_queue_end_label();
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
 
@@ -410,6 +412,6 @@ impl FractalSimulation {
 
 impl std::ops::Drop for FractalSimulation {
     fn drop(&mut self) {
-        // self.vks.wait_all_idle();
+        self.vks.wait_all_idle();
     }
 }
