@@ -5,6 +5,7 @@ use ash::vk::{
     DescriptorPoolSize, DescriptorSet, DescriptorSetLayout, DescriptorType, PipelineLayout,
     WriteDescriptorSet,
 };
+use smallvec::SmallVec;
 
 use crate::{
     vulkan_buffer::VulkanBuffer,
@@ -14,7 +15,7 @@ use crate::{
 
 /// Format is
 /// [0..4] frame id [5 .. 15] buffer id
-pub struct GlobalPushConstant(u32);
+pub struct GlobalPushConstant(pub u32);
 
 impl GlobalPushConstant {
     pub fn from_resource<T>(resource: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
@@ -137,6 +138,7 @@ pub struct BindlessImageResourceHandleEntryPair(
 );
 
 pub struct BindlessResourceSystem {
+    device: *const ash::Device,
     dpool: DescriptorPool,
     set_layouts: Vec<DescriptorSetLayout>,
     descriptor_sets: Vec<DescriptorSet>,
@@ -155,7 +157,48 @@ pub struct BindlessResourceSystem {
     cso_free_slot: std::sync::atomic::AtomicU32,
 }
 
+impl std::ops::Drop for BindlessResourceSystem {
+    fn drop(&mut self) {
+        let free_buffer_res = |buffer_resource: &BindlessResourceEntryBuffer| unsafe {
+            (*self.device).free_memory(buffer_resource.devmem, None);
+            (*self.device).destroy_buffer(buffer_resource.buffer, None);
+        };
+        self.storage_buffers
+            .iter()
+            .for_each(|bindless_buffer| free_buffer_res(bindless_buffer));
+        self.uniform_buffers
+            .iter()
+            .for_each(|uniform_buffer| free_buffer_res(uniform_buffer));
+        self.combined_samplers
+            .iter()
+            .for_each(|combined_sampler| unsafe {
+                (*self.device).free_memory(combined_sampler.devmem, None);
+                (*self.device).destroy_image_view(combined_sampler.view, None);
+                (*self.device).destroy_image(combined_sampler.image, None);
+            });
+
+        unsafe {
+            self.set_layouts.iter().for_each(|&set_layout| {
+                (*self.device).destroy_descriptor_set_layout(set_layout, None);
+            });
+            (*self.device).destroy_descriptor_pool(self.dpool, None);
+            (*self.device).destroy_pipeline_layout(self.bindless_pipeline_layout, None);
+        }
+    }
+}
+
 impl BindlessResourceSystem {
+    const BINDLESS_RESOURCE_INDEX_UBO: usize = 0;
+    const BINDLESS_RESOURCE_INDEX_SBO: usize = 1;
+    const BINDLESS_RESOURCE_INDEX_CSO: usize = 2;
+
+    const DESCRIPTOR_POOL_SIZES: [u32; 3] = [128, 1024, 1024];
+    const DESCRIPTOR_TYPES: [DescriptorType; 3] = [
+        DescriptorType::UNIFORM_BUFFER,
+        DescriptorType::STORAGE_BUFFER,
+        DescriptorType::COMBINED_IMAGE_SAMPLER,
+    ];
+
     pub fn descriptor_sets(&self) -> &[DescriptorSet] {
         &self.descriptor_sets
     }
@@ -164,24 +207,22 @@ impl BindlessResourceSystem {
     }
 
     pub fn new(vks: &VulkanRenderer) -> Result<Self, GraphicsError> {
-        let dpool_sizes = [
-            DescriptorPoolSize::default()
-                .ty(DescriptorType::UNIFORM_BUFFER)
-                .descriptor_count(128),
-            DescriptorPoolSize::default()
-                .ty(DescriptorType::STORAGE_BUFFER)
-                .descriptor_count(512),
-            DescriptorPoolSize::default()
-                .ty(DescriptorType::COMBINED_IMAGE_SAMPLER)
-                .descriptor_count(1024),
-        ];
+        let dpool_sizes = Self::DESCRIPTOR_TYPES
+            .iter()
+            .zip(Self::DESCRIPTOR_POOL_SIZES.iter())
+            .map(|(&desc_type, &pool_size)| {
+                DescriptorPoolSize::default()
+                    .ty(desc_type)
+                    .descriptor_count(pool_size)
+            })
+            .collect::<SmallVec<[DescriptorPoolSize; 3]>>();
 
         let dpool = unsafe {
             vks.logical().create_descriptor_pool(
                 &DescriptorPoolCreateInfo::default()
                     .flags(ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
                     .pool_sizes(&dpool_sizes)
-                    .max_sets(1024),
+                    .max_sets(8192),
                 None,
             )
         }?;
@@ -198,38 +239,56 @@ impl BindlessResourceSystem {
             [
                 (
                     DescriptorType::UNIFORM_BUFFER,
-                    vks.limits().max_descriptor_set_uniform_buffers.min(64),
+                    vks.properties()
+                        .descriptor_indexing
+                        .max_per_stage_descriptor_update_after_bind_uniform_buffers
+                        .min(64),
+                    ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND,
+                    "Bindless - set layout UB",
                 ),
                 (
                     DescriptorType::STORAGE_BUFFER,
-                    vks.limits().max_descriptor_set_storage_buffers.min(256),
+                    1024,
+                    ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                        | ash::vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
+                    "Bindless - set layout SB",
                 ),
                 (
                     DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    vks.limits().max_descriptor_set_sampled_images.min(1024),
+                    1024,
+                    ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
+                        | ash::vk::DescriptorBindingFlags::UPDATE_AFTER_BIND,
+                    "Bindless - set layout CS",
                 ),
             ]
             .iter()
-            .map(|&(descriptor_type, descriptor_count)| unsafe {
-                let binding_flags = [ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
-                    | ash::vk::DescriptorBindingFlags::UPDATE_AFTER_BIND
-                    | ash::vk::DescriptorBindingFlags::VARIABLE_DESCRIPTOR_COUNT];
+            .map(
+                |&(descriptor_type, descriptor_count, binding_flags, tag)| unsafe {
+                    log::info!("Bindless:: {descriptor_type:?}, {descriptor_count}");
+                    let mut flag_info =
+                        ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
+                            .binding_flags(std::slice::from_ref(&binding_flags));
 
-                let mut flag_info = ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo::default()
-                    .binding_flags(&binding_flags);
-
-                vks.logical().create_descriptor_set_layout(
-                    &ash::vk::DescriptorSetLayoutCreateInfo::default()
-                        .push_next(&mut flag_info)
-                        .flags(ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL)
-                        .bindings(&[ash::vk::DescriptorSetLayoutBinding::default()
-                            .descriptor_count(descriptor_count)
-                            .binding(0)
-                            .descriptor_type(descriptor_type)
-                            .stage_flags(ash::vk::ShaderStageFlags::ALL)]),
-                    None,
-                )
-            })
+                    vks.logical()
+                        .create_descriptor_set_layout(
+                            &ash::vk::DescriptorSetLayoutCreateInfo::default()
+                                .push_next(&mut flag_info)
+                                .flags(
+                                    ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL,
+                                )
+                                .bindings(&[ash::vk::DescriptorSetLayoutBinding::default()
+                                    .descriptor_count(descriptor_count)
+                                    .binding(0)
+                                    .descriptor_type(descriptor_type)
+                                    .stage_flags(ash::vk::ShaderStageFlags::ALL)]),
+                            None,
+                        )
+                        .and_then(|set_layout| {
+                            vks.debug_set_object_name(set_layout, tag);
+                            Ok(set_layout)
+                        })
+                },
+            )
             .collect::<Vec<_>>(),
         )?;
 
@@ -253,7 +312,23 @@ impl BindlessResourceSystem {
             )
         }?;
 
+        #[cfg(debug_assertions)]
+        {
+            vks.debug_set_object_name(dpool, "Bindless descriptor pool");
+            vks.debug_set_object_name(bindless_pipeline_layout, "Bindless pipeline layout");
+            Self::DESCRIPTOR_TYPES
+                .iter()
+                .zip(descriptor_sets.iter())
+                .for_each(|(&descriptor_type, &descriptor_set)| {
+                    vks.debug_set_object_name(
+                        descriptor_set,
+                        &format!("Bindless DS {descriptor_type:?}"),
+                    );
+                });
+        }
+
         Ok(Self {
+            device: vks.logical_raw(),
             dpool,
             set_layouts,
             descriptor_sets,
@@ -392,45 +467,41 @@ impl BindlessResourceSystem {
         BindlessImageResourceHandleEntryPair(bindless_handle, cso_entry_data)
     }
 
-    const BINDLESS_RESOURCE_INDEX_UBO: usize = 0;
-    const BINDLESS_RESOURCE_INDEX_SBO: usize = 1;
-    const BINDLESS_RESOURCE_INDEX_CSO: usize = 2;
-
     pub fn flush_pending_updates(&mut self, vks: &VulkanRenderer) {
         let mut descriptor_writes = Vec::<WriteDescriptorSet>::new();
 
-        // dbg!(&self.ubo_pending_writes);
         descriptor_writes.extend(self.ubo_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            let s = std::slice::from_ref(&pwrite.1);
             WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[Self::BINDLESS_RESOURCE_INDEX_UBO])
                 .dst_binding(0)
+                .descriptor_count(1)
                 .dst_array_element(pwrite.0)
                 .descriptor_type(DescriptorType::UNIFORM_BUFFER)
                 .buffer_info(s)
         }));
 
         descriptor_writes.extend(self.ssbo_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            let s = std::slice::from_ref(&pwrite.1);
             WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[Self::BINDLESS_RESOURCE_INDEX_SBO])
                 .dst_binding(0)
+                .descriptor_count(1)
                 .dst_array_element(pwrite.0)
                 .descriptor_type(DescriptorType::STORAGE_BUFFER)
                 .buffer_info(s)
         }));
 
         descriptor_writes.extend(self.cso_pending_writes.iter().map(|pwrite| {
-            let s = unsafe { std::slice::from_raw_parts(&pwrite.1, 1) };
+            let s = std::slice::from_ref(&pwrite.1);
             WriteDescriptorSet::default()
                 .dst_set(self.descriptor_sets[Self::BINDLESS_RESOURCE_INDEX_CSO])
                 .dst_binding(0)
+                .descriptor_count(1)
                 .dst_array_element(pwrite.0)
                 .descriptor_type(DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(s)
         }));
-
-        dbg!(&descriptor_writes);
 
         unsafe {
             vks.logical()

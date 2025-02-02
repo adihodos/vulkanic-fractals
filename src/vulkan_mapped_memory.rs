@@ -1,4 +1,4 @@
-use crate::vulkan_renderer::GraphicsError;
+use crate::{vulkan_buffer::VulkanBuffer, vulkan_renderer::GraphicsError};
 
 pub struct UniqueBufferMapping<'a> {
     buffer_mem: ash::vk::DeviceMemory,
@@ -33,32 +33,34 @@ impl<'a> UniqueBufferMapping<'a> {
         })
     }
 
-    // pub fn new(
-    //     buf: &VulkanBuffer,
-    //     ds: &'a VulkanDeviceState,
-    //     offset: Option<usize>,
-    //     size: Option<usize>,
-    // ) -> std::result::Result<Self, GraphicsError> {
-    //     Self::map_memory(
-    //         &ds.device,
-    //         buf.memory,
-    //         offset.unwrap_or(0),
-    //         size.unwrap_or(ash::vk::WHOLE_SIZE as usize),
-    //     )
-    // }
+    pub fn map_buffer(
+        buf: &'a VulkanBuffer,
+        ds: &'a ash::Device,
+        offset: Option<usize>,
+        size: Option<usize>,
+    ) -> std::result::Result<Self, GraphicsError> {
+        Self::map_memory(
+            ds,
+            buf.memory,
+            offset.unwrap_or(0),
+            size.unwrap_or(buf.aligned_slab_size),
+        )
+    }
 
     pub fn write_data<T: Sized + Copy>(&self, data: &[T]) {
         unsafe {
-            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.mapped_memory as *mut u8 as *mut T,
+                data.len(),
+            );
         }
     }
 
     pub fn write_data_with_offset<T: Sized + Copy>(&mut self, data: &[T], offset: isize) {
         unsafe {
-            let dst = (self.mapped_memory as *mut u8).offset(self.offset as isize);
-            let dst = (dst as *mut T).offset(offset);
-            std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut T, data.len());
+            let dst = (self.mapped_memory as *mut u8 as *mut T).offset(offset);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
         }
     }
 }

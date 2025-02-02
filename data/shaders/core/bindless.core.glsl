@@ -53,10 +53,22 @@ layout (push_constant) uniform PushConstantsGlobal {
 } g_GlobalPushConst;
 
 //
+// [0 .. 3] bits is frame index
+// [4 .. 19] bits is buffer id
+// [20 .. 31] bits is instance id
 // [0..3] frame id (x)
 // [4..14] resource index (y)
-uvec2 unpack_global_pushconst() {
-    return uvec2(g_GlobalPushConst.data & 0xf, (g_GlobalPushConst.data >> 4) & 0x7f);
+uvec3 unpack_global_pushconst() {
+//     const uint frame_idx = (g_GlobalPushConst.data) & 0xFF;
+//     const uint inst_buffer_idx = (g_GlobalPushConst.data & 0xFFFF0000) >> 16;
+//     const uint instance_index = (g_GlobalPushConst.data & 0x0000FF00) >> 8;
+//     return uvec2(g_GlobalPushConst.data >> 20, (g_GlobalPushConst.data & 0xFFFFF));
+
+    const uint frame_id = g_GlobalPushConst.data & 0x10;
+    const uint resource_id = (g_GlobalPushConst.data >> 4) & 0xFF;
+    const uint inst_id = g_GlobalPushConst.data >> 20;
+
+    return uvec3(frame_id, resource_id, inst_id);
 }
 
 #endif /* !defined XR_VK_BINDLESS_CORE_GLSL_INCLUDED */

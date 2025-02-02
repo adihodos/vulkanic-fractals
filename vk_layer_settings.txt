@@ -16,7 +16,7 @@ khronos_validation.validate_sync = true
 khronos_validation.thread_safety = true
 
 # Specifies what action is to be taken when a layer reports information
-khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
+# khronos_validation.debug_action = VK_DBG_LAYER_ACTION_LOG_MSG
 
 # Comma-delineated list of options specifying the types of messages to be reported
 khronos_validation.report_flags = debug,error,perf,info,warn

@@ -22,8 +22,8 @@ layout (location = 0) out VS_OUT_FS_IN {
 } vs_out;
 
 void main() {
-  const uvec2 global_data = unpack_global_pushconst();
-  const uint frame_id = global_data.x;
+  const uvec3 global_data = unpack_global_pushconst();
+  // const uint frame_id = global_data.x;
   const uint buffer_idx = global_data.y;
 
   const UiBackendParams beParams = g_UiBackendParams[buffer_idx].p[0];

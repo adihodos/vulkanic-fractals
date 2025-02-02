@@ -131,7 +131,7 @@ impl UniqueImage {
             .tag_name
             .map(|tag_name| renderer.debug_set_object_name(image, tag_name));
 
-        let maybe_pixels = if create_info.pixels.is_empty() {
+        let maybe_pixels = if !create_info.pixels.is_empty() {
             Some(())
         } else {
             None

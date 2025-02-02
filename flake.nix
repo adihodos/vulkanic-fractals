@@ -51,6 +51,7 @@
           gdb
           cmake
           cmakeCurses
+          gf
 
           zlib
           vulkan-tools

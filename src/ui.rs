@@ -6,13 +6,11 @@ use ash::vk::{
     MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineColorBlendAttachmentState,
     PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo, PipelineLayout,
     PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SamplerAddressMode,
-    SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, VertexInputAttributeDescription,
-    VertexInputRate, Viewport,
+    SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, Viewport,
 };
 use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, FontId, Io, Key};
 use imgui::{DrawCmd, FontSource};
 
-use smallvec::SmallVec;
 use winit::{
     dpi::{LogicalPosition, LogicalSize},
     event::{
@@ -22,17 +20,18 @@ use winit::{
     window::{CursorIcon as MouseCursor, Window},
 };
 
-use crate::shader::ShaderSource;
-use crate::vulkan_image::{UniqueImage, VulkanImageCreateInfo};
-use crate::vulkan_renderer::{
-    BindlessImageResourceHandleEntryPair, BindlessResourceSystem,
-    BindlessStorageBufferResourceHandleEntryPair, BindlessUniformBufferResourceHandleEntryPair,
-    GlobalPushConstant, GraphicsError, GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper,
-    InputAssemblyState, QueueType, UniquePipeline, VulkanBuffer, VulkanBufferCreateInfo,
+use crate::vulkan_bindless::{
+    BindlessImageResourceHandleEntryPair, BindlessResourceHandleCore, BindlessResourceSystem,
+    BindlessStorageBufferResourceHandleEntryPair, GlobalPushConstant,
 };
-use crate::{
-    vulkan_renderer::UniqueSampler, FrameRenderContext, UniqueBufferMapping, VulkanRenderer,
+use crate::vulkan_buffer::{VulkanBuffer, VulkanBufferCreateInfo};
+use crate::vulkan_image::{UniqueImage, UniqueSampler, VulkanImageCreateInfo};
+use crate::vulkan_pipeline::{
+    GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, UniquePipeline,
 };
+use crate::vulkan_renderer::{GraphicsError, QueueType};
+use crate::vulkan_shader::ShaderSource;
+use crate::{FrameRenderContext, UniqueBufferMapping, VulkanRenderer};
 
 type UiVertex = imgui::DrawVert;
 type UiIndex = imgui::DrawIdx;
@@ -242,10 +241,12 @@ fn to_imgui_key(keycode: VirtualKeyCode) -> Option<Key> {
 }
 
 #[derive(Copy, Clone, Debug)]
-#[repr(C, align(16))]
+// #[repr(C, align(16))]
+#[repr(C)]
 struct UiBackendParams {
     transform: [f32; 16],
     font_atlas_id: u32,
+    _pad: [u32; 3],
 }
 
 struct UiRenderState {
@@ -351,7 +352,7 @@ impl UiBackend {
                 work_package: None,
                 usage: BufferUsageFlags::VERTEX_BUFFER,
                 memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
-                slabs: vks.swapchain.max_frames as usize,
+                slabs: vks.max_frames() as usize,
                 bytes: Self::MAX_VERTICES as usize * size_of::<UiVertex>(),
                 initial_data: &[],
             },
@@ -364,7 +365,7 @@ impl UiBackend {
                 work_package: None,
                 usage: BufferUsageFlags::INDEX_BUFFER,
                 memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
-                slabs: vks.swapchain.max_frames as usize,
+                slabs: vks.max_frames() as usize,
                 bytes: Self::MAX_INDICES as usize * size_of::<UiIndex>(),
                 initial_data: &[],
             },
@@ -377,7 +378,7 @@ impl UiBackend {
                 work_package: None,
                 usage: BufferUsageFlags::STORAGE_BUFFER,
                 memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
-                slabs: vks.swapchain.max_frames as usize,
+                slabs: vks.max_frames() as usize,
                 bytes: std::mem::size_of::<UiBackendParams>(),
                 initial_data: &[],
             },
@@ -426,7 +427,7 @@ impl UiBackend {
             vks,
             &VulkanImageCreateInfo {
                 tag_name: Some("UI font atlas"),
-                work_pkg: &qjob,
+                work_pkg: Some(&qjob),
                 ty: ImageType::TYPE_2D,
                 usage: ImageUsageFlags::SAMPLED,
                 memory: MemoryPropertyFlags::DEVICE_LOCAL,
@@ -444,7 +445,7 @@ impl UiBackend {
 
         let sampler = UniqueSampler::new(
             vks,
-            *SamplerCreateInfo::builder()
+            ash::vk::SamplerCreateInfo::default()
                 .address_mode_u(SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_v(SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_w(SamplerAddressMode::CLAMP_TO_EDGE)
@@ -452,27 +453,27 @@ impl UiBackend {
                 .mag_filter(Filter::LINEAR)
                 .min_filter(Filter::LINEAR)
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
-        );
+        )?;
 
         let atlas_handle = bindless_sys.register_image(font_atlas_img, &sampler, None);
         vks.queue_ownership_transfer(&atlas_handle);
 
         let pipeline = GraphicsPipelineSetupHelper::new()
-            .set_input_assembly_state(InputAssemblyState {
+            .set_input_assembly_state(crate::vulkan_pipeline::InputAssemblyState {
                 stride: std::mem::size_of::<UiVertex>() as u32,
-                input_rate: VertexInputRate::VERTEX,
+                input_rate: ash::vk::VertexInputRate::VERTEX,
                 vertex_descriptions: vec![
-                    *VertexInputAttributeDescription::builder()
+                    ash::vk::VertexInputAttributeDescription::default()
                         .binding(0)
                         .format(ash::vk::Format::R32G32_SFLOAT)
                         .location(0)
                         .offset(0),
-                    *VertexInputAttributeDescription::builder()
+                    ash::vk::VertexInputAttributeDescription::default()
                         .binding(0)
                         .format(ash::vk::Format::R32G32_SFLOAT)
                         .location(1)
                         .offset(8),
-                    *VertexInputAttributeDescription::builder()
+                    ash::vk::VertexInputAttributeDescription::default()
                         .binding(0)
                         .format(ash::vk::Format::R8G8B8A8_UNORM)
                         .location(2)
@@ -482,7 +483,7 @@ impl UiBackend {
             .add_shader_stage(ShaderSource::File("data/shaders/ui.bindless.vert".into()))
             .add_shader_stage(ShaderSource::File("data/shaders/ui.bindless.frag".into()))
             .set_depth_stencil_state(
-                *PipelineDepthStencilStateCreateInfo::builder()
+                PipelineDepthStencilStateCreateInfo::default()
                     .depth_test_enable(false)
                     .depth_write_enable(false)
                     .stencil_test_enable(false)
@@ -490,15 +491,15 @@ impl UiBackend {
                     .max_depth_bounds(1f32),
             )
             .set_raster_state(
-                *PipelineRasterizationStateCreateInfo::builder()
+                PipelineRasterizationStateCreateInfo::default()
                     .cull_mode(CullModeFlags::NONE)
                     .front_face(FrontFace::COUNTER_CLOCKWISE)
                     .polygon_mode(PolygonMode::FILL)
                     .line_width(1f32),
             )
             .set_colorblend_state(
-                *PipelineColorBlendStateCreateInfo::builder().attachments(&[
-                    *PipelineColorBlendAttachmentState::builder()
+                PipelineColorBlendStateCreateInfo::default().attachments(&[
+                    PipelineColorBlendAttachmentState::default()
                         .color_write_mask(ColorComponentFlags::RGBA)
                         .blend_enable(true)
                         .alpha_blend_op(BlendOp::ADD)
@@ -755,15 +756,12 @@ impl UiBackend {
             return;
         }
 
-        let buf_size_one_frame = size_of::<DrawVert>() * Self::MAX_VERTICES as usize;
-        let index_buf_size_one_frame = size_of::<DrawIdx>() * Self::MAX_INDICES as usize;
-
         //
         // Push vertices + indices 2 GPU
         {
-            let mut vertex_buffer_mapping = UniqueBufferMapping::new(
+            let mut vertex_buffer_mapping = UniqueBufferMapping::map_buffer(
                 &self.rs.vertex_buffer,
-                &vks.device_state,
+                &vks.logical(),
                 Some(
                     self.rs.vertex_buffer.aligned_slab_size
                         * frame_context.current_frame_id as usize,
@@ -772,9 +770,9 @@ impl UiBackend {
             )
             .unwrap();
 
-            let mut index_buffer_mapping = UniqueBufferMapping::new(
+            let mut index_buffer_mapping = UniqueBufferMapping::map_buffer(
                 &self.rs.index_buffer,
-                &vks.device_state,
+                &vks.logical(),
                 Some(
                     self.rs.index_buffer.aligned_slab_size
                         * frame_context.current_frame_id as usize,
@@ -798,7 +796,7 @@ impl UiBackend {
             );
         }
 
-        let graphics_device = &vks.device_state.device;
+        let graphics_device = vks.logical();
 
         unsafe {
             graphics_device.cmd_bind_pipeline(
@@ -867,12 +865,11 @@ impl UiBackend {
                     1.0f32,
                 ],
                 font_atlas_id: atlas_id,
-                // _pad: [0u32; 3],
+                _pad: [0u32; 3],
             };
 
             //
             // push transform
-
             UniqueBufferMapping::map_memory(
                 vks.logical(),
                 self.rs.ubo_handle.1.devmem,
@@ -882,16 +879,13 @@ impl UiBackend {
             .map(|ubo| ubo.write_data(std::slice::from_ref(&transform)))
             .expect("Failed to update UI params");
 
-            vks.device_state.device.cmd_push_constants(
+            graphics_device.cmd_push_constants(
                 frame_context.cmd_buff,
                 self.rs.bindless_layout,
                 ShaderStageFlags::ALL,
                 0,
-                &GlobalPushConstant::from_resource(
-                    self.rs.ubo_handle.0,
-                    frame_context.current_frame_id,
-                )
-                .to_gpu(),
+                &UIPushConstant::create(self.rs.ubo_handle.0, frame_context.current_frame_id)
+                    .to_gpu(),
             );
 
             //
@@ -985,4 +979,20 @@ fn init_imgui() -> imgui::Context {
     )));
 
     imgui
+}
+
+///
+#[derive(Copy, Clone, Debug)]
+struct UIPushConstant(u32);
+
+impl UIPushConstant {
+    fn create<T>(bindless_res: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
+        assert!(frame_id < 16);
+        let resource_handle = bindless_res.element_handle(frame_id as usize).handle();
+        Self((resource_handle << 4) | frame_id)
+    }
+
+    fn to_gpu(self) -> [u8; 4] {
+        self.0.to_le_bytes()
+    }
 }

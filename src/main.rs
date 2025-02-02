@@ -1,8 +1,11 @@
 // use ash::vk::{BufferUsageFlags, MemoryPropertyFlags};
 
+use vulkan_bindless::{BindlessResourceSystem, BindlessUniformBufferResourceHandleEntryPair};
+use vulkan_buffer::{VulkanBuffer, VulkanBufferCreateInfo};
+use vulkan_mapped_memory::UniqueBufferMapping;
 use vulkan_renderer::{FrameRenderContext, VulkanRenderer};
 // use fractal::{Julia, Mandelbrot};
-// use ui::UiBackend;
+use ui::UiBackend;
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -11,16 +14,16 @@ use winit::{
 };
 
 // mod fractal;
-mod spin_mutex;
-mod vulkan_shader;
-// mod ui;
 mod math;
+mod spin_mutex;
+mod ui;
 mod vulkan_bindless;
 mod vulkan_buffer;
 mod vulkan_image;
 mod vulkan_mapped_memory;
 mod vulkan_pipeline;
 mod vulkan_renderer;
+mod vulkan_shader;
 
 use enum_iterator::{next_cycle, previous_cycle};
 
@@ -74,30 +77,6 @@ fn main() {
         ))
         .expect("Failed to center cursor ...");
 
-    // use std::sync::Arc;
-    //
-    // let vks = Arc::new(Box::pin(
-    //     VulkanRenderer::new(get_window_data(&window), window.inner_size().into())
-    //         .expect("Failed to initialize vulkan ..."),
-    // ));
-    //
-    // let mtx = Arc::new(spin_mutex::SpinMutex::new());
-    // let mymtx = Arc::clone(&mtx);
-    //
-    // let vks2 = Arc::clone(&vks);
-    // let task = rt.spawn(async move {
-    //     let (x, y, z) = vks2.reserve_staging_memory(1024);
-    //     let _ = mtx.lock();
-    //     println!("Spwning and waiting for pepega task, reserved mem @ {z}");
-    //     let task2 = async_computation(vks2).await;
-    //     println!("Original task done.");
-    // });
-    // {
-    //     let _ = mymtx.lock();
-    // }
-    //
-    // rt.block_on(task).unwrap();
-    //
     let mut fractal_sim = FractalSimulation::new(&window);
 
     event_loop.run(move |event, _, control_flow| {
@@ -123,12 +102,13 @@ struct FractalSimulation {
     // julia: Julia,
     // mandelbrot: Mandelbrot,
     ui_opened: bool,
-    // ui: UiBackend,
+    #[cfg(feature = "enable_ui")]
+    ui: UiBackend,
     control_down: bool,
     cursor_pos: (f32, f32),
+    bindless_sys: BindlessResourceSystem,
+    ubo_globals_handle: BindlessUniformBufferResourceHandleEntryPair,
     vks: std::pin::Pin<Box<VulkanRenderer>>,
-    // bindless_sys: BindlessResourceSystem,
-    // ubo_globals_handle: BindlessUniformBufferResourceHandleEntryPair,
 }
 
 #[cfg(target_os = "windows")]
@@ -176,7 +156,7 @@ impl FractalSimulation {
 
         log::info!("Cursor initial position {:?}", cursor_pos);
 
-        let vks = Box::pin(
+        let mut vks = Box::pin(
             VulkanRenderer::create(get_window_data(window))
                 .expect("Failed to initialize vulkan ..."),
         );
@@ -186,29 +166,31 @@ impl FractalSimulation {
         //
         // let (max_frames,) = vks.setup();
         //
-        // let mut bindless_sys = BindlessResourceSystem::new(&vks).expect("Cant create bindless sys");
-        //
-        // let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default)
-        //     .expect("Failed to create UI backend");
+        let mut bindless_sys = BindlessResourceSystem::new(&vks).expect("Cant create bindless sys");
+
+        #[cfg(feature = "enable_ui")]
+        let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default)
+            .expect("Failed to create UI backend");
         //
         // let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys);
         // let julia = Julia::new(&mut vks, &mut bindless_sys);
-        //
-        // let ubo_globals = VulkanBuffer::create(
-        //     &mut vks,
-        //     &VulkanBufferCreateInfo {
-        //         name_tag: None,
-        //         work_package: None,
-        //         usage: BufferUsageFlags::UNIFORM_BUFFER,
-        //         memory_properties: MemoryPropertyFlags::HOST_VISIBLE,
-        //         bytes: std::mem::size_of::<UniformGlobals>(),
-        //         slabs: max_frames as usize,
-        //         initial_data: &[],
-        //     },
-        // )
-        // .expect("Failed to create ubo_globals");
-        //
-        // let ubo_globals_handle = bindless_sys.register_uniform_buffer(ubo_globals, None);
+
+        let max_frames = vks.max_frames() as usize;
+        let ubo_globals = VulkanBuffer::create(
+            &mut vks,
+            &VulkanBufferCreateInfo {
+                name_tag: Some("Global UBO"),
+                work_package: None,
+                usage: ash::vk::BufferUsageFlags::UNIFORM_BUFFER,
+                memory_properties: ash::vk::MemoryPropertyFlags::HOST_VISIBLE,
+                bytes: std::mem::size_of::<UniformGlobals>(),
+                slabs: max_frames,
+                initial_data: &[],
+            },
+        )
+        .expect("Failed to create ubo_globals");
+
+        let ubo_globals_handle = bindless_sys.register_uniform_buffer(ubo_globals, None);
         //
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
@@ -218,9 +200,12 @@ impl FractalSimulation {
             control_down: false,
             cursor_pos,
             vks,
-            // ui,
-            // bindless_sys,
-            // ubo_globals_handle,
+
+            #[cfg(feature = "enable_ui")]
+            ui,
+
+            bindless_sys,
+            ubo_globals_handle,
         }
     }
 
@@ -234,60 +219,64 @@ impl FractalSimulation {
             .debug_queue_begin_label("### render start ###", [0f32, 1f32, 0f32, 1f32]);
         let frame_context = self.vks.begin_rendering(img_size);
 
-        // UniqueBufferMapping::map_memory(
-        //     self.vks.logical(),
-        //     self.ubo_globals_handle.1.devmem,
-        //     self.ubo_globals_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
-        //     self.ubo_globals_handle.1.aligned_slab_size,
-        // )
-        // .map(|bmapping| bmapping.write_data(std::slice::from_ref(&ubo_data)));
+        let _ = UniqueBufferMapping::map_memory(
+            self.vks.logical(),
+            self.ubo_globals_handle.1.devmem,
+            self.ubo_globals_handle.1.aligned_slab_size * frame_context.current_frame_id as usize,
+            self.ubo_globals_handle.1.aligned_slab_size,
+        )
+        .map(|bmapping| {
+            let data = unsafe { std::mem::MaybeUninit::<UniformGlobals>::zeroed().assume_init() };
+            bmapping.write_data(std::slice::from_ref(&data));
+        });
 
-        // self.bindless_sys.flush_pending_updates(&self.vks);
-        // self.bindless_sys
-        //     .bind_descriptors(frame_context.cmd_buff, &self.vks);
+        self.bindless_sys.flush_pending_updates(&self.vks);
+        self.bindless_sys
+            .bind_descriptors(frame_context.cmd_buff, &self.vks);
 
         frame_context
     }
 
-    // fn setup_ui(&mut self, window: &winit::window::Window) {
-    //     let ui = self.ui.new_frame(window);
-    //
-    //     ui.window("Fractal type")
-    //         .size([800f32, 600f32], imgui::Condition::Always)
-    //         .resizable(true)
-    //         .build(|| {
-    //             ui.begin_combo("Fractal type", format!("{:?}", self.ftype))
-    //                 .map(|_| {
-    //                     let mut selected = self.ftype;
-    //                     for item in enum_iterator::all::<FractalType>() {
-    //                         if selected == item {
-    //                             ui.set_item_default_focus();
-    //                         }
-    //
-    //                         let clicked = ui
-    //                             .selectable_config(format!("{:?}", item))
-    //                             .selected(selected == item)
-    //                             .build();
-    //
-    //                         //
-    //                         // When item is clicked, store it
-    //                         if clicked {
-    //                             selected = item;
-    //                             self.ftype = item;
-    //                         }
-    //                     }
-    //                 });
-    //
-    //             ui.separator();
-    //             ui.text_colored([0.0f32, 1.0f32, 0.0f32, 1.0f32], "::: Parameters :::");
-    //             ui.separator();
-    //
-    //             match self.ftype {
-    //                 FractalType::Julia => self.julia.do_ui(ui),
-    //                 FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
-    //             }
-    //         });
-    // }
+    #[cfg(feature = "enable_ui")]
+    fn setup_ui(&mut self, window: &winit::window::Window) {
+        let ui = self.ui.new_frame(window);
+
+        ui.window("Fractal type")
+            .size([800f32, 600f32], imgui::Condition::Always)
+            .resizable(true)
+            .build(|| {
+                ui.begin_combo("Fractal type", format!("{:?}", self.ftype))
+                    .map(|_| {
+                        let mut selected = self.ftype;
+                        for item in enum_iterator::all::<FractalType>() {
+                            if selected == item {
+                                ui.set_item_default_focus();
+                            }
+
+                            let clicked = ui
+                                .selectable_config(format!("{:?}", item))
+                                .selected(selected == item)
+                                .build();
+
+                            //
+                            // When item is clicked, store it
+                            if clicked {
+                                selected = item;
+                                self.ftype = item;
+                            }
+                        }
+                    });
+
+                ui.separator();
+                ui.text_colored([0.0f32, 1.0f32, 0.0f32, 1.0f32], "::: Parameters :::");
+                ui.separator();
+
+                // match self.ftype {
+                // FractalType::Julia => self.julia.do_ui(ui),
+                // FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
+                // }
+            });
+    }
 
     fn handle_window_event(
         &mut self,
@@ -379,10 +368,12 @@ impl FractalSimulation {
                 event: ref win_event,
                 ..
             } => {
-                // let wants_input = self.ui.handle_event(window, &event);
-                // if !wants_input {
+                #[cfg(feature = "enable_ui")]
+                {
+                    let wants_input = self.ui.handle_event(window, &event);
+                    if !wants_input {}
+                }
                 self.handle_window_event(window, win_event, control_flow);
-                // }
             }
 
             Event::MainEventsCleared => {
@@ -397,11 +388,14 @@ impl FractalSimulation {
                 //     }
                 // }
                 //
-                // self.setup_ui(window);
-                // self.ui.draw_frame(&self.vks, &frame_context);
+
+                #[cfg(feature = "enable_ui")]
+                {
+                    self.setup_ui(window);
+                    self.ui.draw_frame(&self.vks, &frame_context);
+                }
                 //
                 self.vks.end_rendering(frame_context);
-                self.vks.debug_queue_end_label();
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
 

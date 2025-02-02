@@ -44,6 +44,10 @@ debug_object_tag_helper!(
     ash::vk::ObjectType::DESCRIPTOR_SET_LAYOUT
 );
 debug_object_tag_helper!(ash::vk::DeviceMemory, ash::vk::ObjectType::DEVICE_MEMORY);
+debug_object_tag_helper!(
+    ash::vk::DescriptorPool,
+    ash::vk::ObjectType::DESCRIPTOR_POOL
+);
 
 #[derive(thiserror::Error, Debug)]
 pub enum GraphicsError {
@@ -162,7 +166,7 @@ impl VulkanDeviceState {
                     .push_next(&mut enabled_features)
                     .enabled_extension_names(&[
                         ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
-                        ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
+                        // ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
                     ])
                     .queue_create_infos(&queue_create_infos),
                 None,
@@ -199,8 +203,8 @@ impl VulkanDeviceState {
         if physical.features.dynamic_rendering {
             Ok(RenderState::Dynamic {
                 color_attachments: [surface.format.format],
-                depth_attachments: [surface.format.format],
-                stencil_attachments: [surface.format.format],
+                depth_attachments: [surface.depth_format],
+                stencil_attachments: [surface.depth_format],
             })
         } else {
             let attachment_descriptions = [ash::vk::AttachmentDescription::default()
@@ -292,8 +296,46 @@ pub struct VulkanSurfaceState {
     pub present_mode: ash::vk::PresentModeKHR,
 }
 
+#[derive(Copy, Clone)]
+pub struct DescriptorIndexing {
+    pub max_update_after_bind_descriptors_in_all_pools: u32,
+    pub max_per_stage_descriptor_update_after_bind_samplers: u32,
+    pub max_per_stage_descriptor_update_after_bind_uniform_buffers: u32,
+    pub max_per_stage_descriptor_update_after_bind_storage_buffers: u32,
+    pub max_per_stage_descriptor_update_after_bind_sampled_images: u32,
+    pub max_per_stage_descriptor_update_after_bind_storage_images: u32,
+    pub max_per_stage_descriptor_update_after_bind_input_attachments: u32,
+    pub max_per_stage_update_after_bind_resources: u32,
+}
+
 pub struct PhysicalDeviceProperties {
-    base: ash::vk::PhysicalDeviceProperties,
+    pub base: ash::vk::PhysicalDeviceProperties,
+    pub descriptor_indexing: DescriptorIndexing,
+}
+
+impl<'a> std::convert::From<ash::vk::PhysicalDeviceDescriptorIndexingProperties<'a>>
+    for DescriptorIndexing
+{
+    fn from(value: ash::vk::PhysicalDeviceDescriptorIndexingProperties) -> Self {
+        Self {
+            max_update_after_bind_descriptors_in_all_pools: value
+                .max_update_after_bind_descriptors_in_all_pools,
+            max_per_stage_descriptor_update_after_bind_samplers: value
+                .max_per_stage_descriptor_update_after_bind_samplers,
+            max_per_stage_descriptor_update_after_bind_uniform_buffers: value
+                .max_per_stage_descriptor_update_after_bind_uniform_buffers,
+            max_per_stage_descriptor_update_after_bind_storage_buffers: value
+                .max_per_stage_descriptor_update_after_bind_storage_buffers,
+            max_per_stage_descriptor_update_after_bind_sampled_images: value
+                .max_per_stage_descriptor_update_after_bind_sampled_images,
+            max_per_stage_descriptor_update_after_bind_storage_images: value
+                .max_per_stage_descriptor_update_after_bind_storage_images,
+            max_per_stage_descriptor_update_after_bind_input_attachments: value
+                .max_per_stage_descriptor_update_after_bind_input_attachments,
+            max_per_stage_update_after_bind_resources: value
+                .max_per_stage_update_after_bind_resources,
+        }
+    }
 }
 
 pub struct PhysicalDeviceFeatures {
@@ -376,7 +418,7 @@ impl InstanceState {
         ];
 
         let app_create_info = ash::vk::ApplicationInfo::default()
-            .api_version(ash::vk::make_api_version(0, 1, 3, 0))
+            .api_version(ash::vk::API_VERSION_1_3)
             .application_name(app_name_engine[0].as_c_str())
             .application_version(1)
             .engine_name(app_name_engine[1].as_c_str())
@@ -388,8 +430,8 @@ impl InstanceState {
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
             #[cfg(target_os = "linux")]
             ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            #[cfg(target_os = "windows")]
-            ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr(),
+            // #[cfg(target_os = "windows")]
+            // ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr(),
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
 
@@ -570,6 +612,10 @@ impl VulkanRenderer {
         })
     }
 
+    pub fn max_frames(&self) -> u32 {
+        self.presentation_state.image_count
+    }
+
     pub fn logical(&self) -> &ash::Device {
         &self.device_state.logical
     }
@@ -715,6 +761,10 @@ impl VulkanRenderer {
 
     pub fn limits(&self) -> &ash::vk::PhysicalDeviceLimits {
         &self.device_state.physical.properties.base.limits
+    }
+
+    pub fn properties(&self) -> &PhysicalDeviceProperties {
+        &self.device_state.physical.properties
     }
 
     pub fn memory_properties(&self) -> &ash::vk::PhysicalDeviceMemoryProperties {
@@ -1163,6 +1213,8 @@ impl VulkanRenderer {
                 .expect("Failed to end command buffer");
         }
 
+        self.debug_queue_end_label();
+
         //
         // submit
         unsafe {
@@ -1299,15 +1351,18 @@ fn pick_device(
     unsafe { instance.enumerate_physical_devices() }?
         .into_iter()
         .filter_map(|phys_device| -> Option< (PhysicalDeviceState, PickedDeviceExtraData)  > {
-            let (physical_device_properties, props_vk11, props_vk12, props_vk13) = unsafe {
+            let (physical_device_properties, props_vk11, props_vk12, props_vk13, descriptor_indexing) = unsafe {
                 let mut props_vk11 = ash::vk::PhysicalDeviceVulkan11Properties::default();
                 let mut props_vk12 = ash::vk::PhysicalDeviceVulkan12Properties::default();
                 let mut props_vk13 = ash::vk::PhysicalDeviceVulkan13Properties::default();
+                let mut descriptor_indexing = ash::vk::PhysicalDeviceDescriptorIndexingProperties::default();
 
                 let mut phys_dev_props2 = ash::vk::PhysicalDeviceProperties2::default()
                     .push_next(&mut props_vk11)
                     .push_next(&mut props_vk12)
-                    .push_next(&mut props_vk13);
+                    .push_next(&mut props_vk13)
+                    .push_next(&mut descriptor_indexing)
+                    ;
 
                 instance.get_physical_device_properties2(phys_device, &mut phys_dev_props2);
                 (
@@ -1315,6 +1370,7 @@ fn pick_device(
                     props_vk11,
                     props_vk12,
                     props_vk13,
+                    descriptor_indexing,
                 )
             };
 
@@ -1554,7 +1610,7 @@ fn pick_device(
             Some((
                     PhysicalDeviceState {
                         device: phys_device,
-                        properties: PhysicalDeviceProperties { base: physical_device_properties },
+                        properties: PhysicalDeviceProperties { base: physical_device_properties , descriptor_indexing: descriptor_indexing.into() },
                         features: PhysicalDeviceFeatures { base:  physical_device_features, dynamic_rendering: f_vk13.dynamic_rendering != 0, },
                         memory: phys_dev_memory_props,
                     },
