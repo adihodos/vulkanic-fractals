@@ -65,7 +65,7 @@ uvec3 unpack_global_pushconst() {
 //     return uvec2(g_GlobalPushConst.data >> 20, (g_GlobalPushConst.data & 0xFFFFF));
 
     const uint frame_id = g_GlobalPushConst.data & 0x10;
-    const uint resource_id = (g_GlobalPushConst.data >> 4) & 0xFF;
+    const uint resource_id = (g_GlobalPushConst.data >> 4) & 0xFFFF;
     const uint inst_id = g_GlobalPushConst.data >> 20;
 
     return uvec3(frame_id, resource_id, inst_id);

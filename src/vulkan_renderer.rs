@@ -166,6 +166,7 @@ impl VulkanDeviceState {
                     .push_next(&mut enabled_features)
                     .enabled_extension_names(&[
                         ash::vk::KHR_SWAPCHAIN_NAME.as_ptr(),
+                        // crashes Renderdoc for some reason ...
                         // ash::vk::EXT_DESCRIPTOR_BUFFER_NAME.as_ptr(),
                     ])
                     .queue_create_infos(&queue_create_infos),
@@ -297,6 +298,7 @@ pub struct VulkanSurfaceState {
 }
 
 #[derive(Copy, Clone)]
+#[allow(unused)]
 pub struct DescriptorIndexing {
     pub max_update_after_bind_descriptors_in_all_pools: u32,
     pub max_per_stage_descriptor_update_after_bind_samplers: u32,
@@ -430,8 +432,8 @@ impl InstanceState {
             ash::vk::KHR_SURFACE_NAME.as_ptr(),
             #[cfg(target_os = "linux")]
             ash::vk::KHR_XLIB_SURFACE_NAME.as_ptr(),
-            // #[cfg(target_os = "windows")]
-            // ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr(),
+            #[cfg(target_os = "windows")]
+            ash::vk::KHR_WIN32_SURFACE_NAME.as_ptr(),
             ash::vk::EXT_DEBUG_UTILS_NAME.as_ptr(),
         ];
 
@@ -710,7 +712,7 @@ impl VulkanRenderer {
     }
 
     pub fn submit_queue_job(&self, job: QueuedJob) -> Result<QueueSubmitWaitToken, GraphicsError> {
-        let (_, queue, cmd_pool, pool_lock, queue_lock) = self.queue_data(job.queue_type);
+        let (_, queue, cmd_pool, pool_lock, _queue_lock) = self.queue_data(job.queue_type);
 
         let wait_fence = unsafe {
             self.device_state
@@ -2192,16 +2194,14 @@ pub struct FrameRenderContext {
     pub acquired_swapchain_image: u32,
 }
 
-//
-// pub mod misc {
-//     pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
-//         use std::io::Write;
-//         let mut f = std::fs::File::create(file).unwrap();
-//
-//         writeln!(&mut f, "P3 {width} {height} 255").unwrap();
-//         pixels.chunks(4).for_each(|c| {
-//             writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
-//         });
-//     }
-// }
-//
+pub mod misc {
+    pub fn write_ppm<P: AsRef<std::path::Path>>(file: P, width: u32, height: u32, pixels: &[u8]) {
+        use std::io::Write;
+        let mut f = std::fs::File::create(file).unwrap();
+
+        writeln!(&mut f, "P3 {width} {height} 255").unwrap();
+        pixels.chunks(4).for_each(|c| {
+            writeln!(&mut f, "{} {} {}", c[0], c[1], c[2]).unwrap();
+        });
+    }
+}

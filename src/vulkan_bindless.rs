@@ -13,17 +13,43 @@ use crate::{
     vulkan_renderer::{GraphicsError, VulkanRenderer},
 };
 
-/// Format is
-/// [0..4] frame id [5 .. 15] buffer id
-pub struct GlobalPushConstant(pub u32);
+/// Encodes some data for the GPU as a shader push constant (u32).
+/// bits [0..3] frame id
+/// bits [4..19] bindless resource index
+/// bits [20..31] not used atm
+#[derive(Copy, Clone)]
+pub struct GlobalPushConstant(u32);
 
 impl GlobalPushConstant {
-    pub fn from_resource<T>(resource: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
-        GlobalPushConstant(resource.handle() | frame_id << 20)
+    pub fn from_resource<T>(
+        resource: BindlessResourceHandleCore<T>,
+        frame_id: u32,
+        misc: Option<u32>,
+    ) -> Self {
+        assert!(frame_id < 16);
+        assert!(misc.unwrap_or_default() < (1 << 12));
+
+        let resource_handle = resource.element_handle(frame_id as usize).handle();
+        assert!(resource_handle < (1 << 20));
+
+        Self((misc.unwrap_or_default() << 20) | (resource_handle << 4) | frame_id)
     }
 
     pub fn to_gpu(&self) -> [u8; 4] {
         self.0.to_le_bytes()
+    }
+}
+
+impl std::fmt::Debug for GlobalPushConstant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GlobalPushConstant value: {0} - {0:b} -> [misc {1}, resource: {2}, frame: {3}]",
+            self.0,
+            self.0 >> 20,
+            (self.0 >> 4) & 0xFFFF,
+            self.0 & 0xF
+        )
     }
 }
 
@@ -35,10 +61,22 @@ impl std::convert::AsRef<[u8]> for GlobalPushConstant {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct BindlessResourceHandleCore<T> {
     id: u32,
     _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> std::fmt::Debug for BindlessResourceHandleCore<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "BindlessResourceHandle value: {} -> [handle {}, array elements {}]",
+            self.id,
+            self.handle(),
+            self.array_elements()
+        )
+    }
 }
 
 impl<T> BindlessResourceHandleCore<T> {

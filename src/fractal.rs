@@ -1,24 +1,22 @@
 use ash::vk::{
-    BorderColor, BufferUsageFlags, CommandBuffer, ComponentSwizzle, CullModeFlags, DynamicState,
-    Extent3D, Filter, Format, FrontFace, ImageLayout, ImageTiling, ImageType, ImageUsageFlags,
-    ImageViewCreateInfo, MemoryPropertyFlags, Offset2D, PipelineBindPoint,
+    BorderColor, BufferUsageFlags, CullModeFlags, DynamicState, Filter, Format, FrontFace,
+    ImageType, ImageUsageFlags, MemoryPropertyFlags, Offset2D, PipelineBindPoint,
     PipelineDepthStencilStateCreateInfo, PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D,
-    SampleCountFlags, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags,
-    SharingMode, Viewport,
+    SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, Viewport,
 };
-use crevice::std140::AsStd140;
 use enum_iterator::{next_cycle, previous_cycle};
 
 use crate::{
-    shader::ShaderSource,
-    vulkan_image::{UniqueImage, VulkanImageCreateInfo},
-    vulkan_renderer::{
+    vulkan_bindless::{
         BindlessImageResourceHandleEntryPair, BindlessResourceSystem,
-        BindlessStorageBufferResourceHandleEntryPair, BindlessUniformBufferResourceHandleEntryPair,
-        FrameRenderContext, GlobalPushConstant, GraphicsPipelineCreateOptions,
-        GraphicsPipelineSetupHelper, QueueType, UniqueBufferMapping, UniquePipeline, UniqueSampler,
-        VulkanBuffer, VulkanBufferCreateInfo, VulkanRenderer,
+        BindlessStorageBufferResourceHandleEntryPair, GlobalPushConstant,
     },
+    vulkan_buffer::{VulkanBuffer, VulkanBufferCreateInfo},
+    vulkan_image::{UniqueImage, UniqueSampler, VulkanImageCreateInfo},
+    vulkan_mapped_memory::UniqueBufferMapping,
+    vulkan_pipeline::{GraphicsPipelineCreateOptions, GraphicsPipelineSetupHelper, UniquePipeline},
+    vulkan_renderer::{FrameRenderContext, GraphicsError, QueueType, VulkanRenderer},
+    vulkan_shader::ShaderSource,
     InputState,
 };
 
@@ -56,7 +54,8 @@ trait FractalCoreParams {
     fn ssbo_size() -> usize;
 }
 
-#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
 struct FractalCommonCore {
     screen_width: u32,
     screen_height: u32,
@@ -343,7 +342,8 @@ enum JuliaIterationType {
     Cubic,
 }
 
-#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct JuliaCPU2GPU {
     core: FractalCommonCore,
     c_x: f32,
@@ -367,24 +367,13 @@ impl FractalCoreParams for JuliaCPU2GPU {
     const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/julia.bindless.frag";
 
     fn ssbo_size() -> usize {
-        // log::info!("GLSL {}", Self::glsl_definition());
-
-        let mut sizer = crevice::std140::Sizer::new();
-        sizer.add::<FractalCommonCore>();
-        sizer.add::<f32>();
-        sizer.add::<f32>();
-        sizer.add::<u32>();
-
-        log::info!("Julia SSBO item size {}", sizer.len());
-
-        sizer.len()
+        log::info!("Julia SSBO item size {}", std::mem::size_of::<Self>());
+        std::mem::size_of::<Self>()
     }
 }
 
 impl JuliaCPU2GPU {
     fn new(c_x: f32, c_y: f32, iteration: JuliaIterationType, palette_handle: u32) -> JuliaCPU2GPU {
-        use crevice::glsl::GlslStruct;
-        log::trace!("Julia GLSL {}", Self::glsl_definition());
         Self {
             core: FractalCommonCore::new::<JuliaCPU2GPU>(palette_handle),
             c_x,
@@ -537,9 +526,13 @@ impl Julia {
         },
     ];
 
-    pub fn new(vks: &mut VulkanRenderer, bindless: &mut BindlessResourceSystem) -> Julia {
-        let gpu_state = FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless);
-        Self {
+    pub fn create(
+        vks: &mut VulkanRenderer,
+        bindless: &mut BindlessResourceSystem,
+    ) -> std::result::Result<Julia, GraphicsError> {
+        let gpu_state = FractalGPUState::new::<JuliaCPU2GPU>(vks, bindless)?;
+
+        Ok(Self {
             params: JuliaCPU2GPU::new(
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[0],
                 Self::INTERESTING_POINTS_QUADRATIC[0].coords[1],
@@ -551,7 +544,7 @@ impl Julia {
             point_sine_idx: 0,
             point_cosine_idx: 0,
             point_cubic_idx: 0,
-        }
+        })
     }
 
     pub fn input_handler(&mut self, input_state: &InputState) {
@@ -577,9 +570,8 @@ impl Julia {
     }
 
     pub fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext) {
-        let params_std140 = self.params.as_std140();
         self.gpu_state
-            .render(vks, context, params_std140.as_bytes());
+            .render(vks, context, std::slice::from_ref(&self.params));
     }
 
     pub fn do_ui(&mut self, ui: &imgui::Ui) {
@@ -704,7 +696,7 @@ enum MandelbrotType {
     BurningShip,
 }
 
-#[derive(Copy, Clone, Debug, crevice::std140::AsStd140, crevice::glsl::GlslStruct)]
+#[derive(Copy, Clone, Debug)]
 struct MandelbrotCPU2GPU {
     core: FractalCommonCore,
     ftype: u32,
@@ -726,12 +718,11 @@ impl FractalCoreParams for MandelbrotCPU2GPU {
     const BINDLESS_FRAGMENT_SHADER_MODULE: &'static str = "data/shaders/mandelbrot.bindless.frag";
 
     fn ssbo_size() -> usize {
-        let mut sizer = crevice::std140::Sizer::new();
-        sizer.add::<FractalCommonCore>();
-        sizer.add::<u32>();
-
-        log::info!("Mandelbrot SSBO item length {}", sizer.len());
-        sizer.len()
+        log::info!(
+            "Mandelbrot SSBO item length {}",
+            std::mem::size_of::<Self>()
+        );
+        std::mem::size_of::<Self>()
     }
 }
 
@@ -741,15 +732,19 @@ pub struct Mandelbrot {
 }
 
 impl Mandelbrot {
-    pub fn new(vks: &mut VulkanRenderer, bindless: &mut BindlessResourceSystem) -> Mandelbrot {
-        let gpu_state = FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless);
-        Self {
+    pub fn new(
+        vks: &mut VulkanRenderer,
+        bindless: &mut BindlessResourceSystem,
+    ) -> std::result::Result<Mandelbrot, GraphicsError> {
+        let gpu_state = FractalGPUState::new::<MandelbrotCPU2GPU>(vks, bindless)?;
+
+        Ok(Self {
             params: MandelbrotCPU2GPU {
                 core: FractalCommonCore::new::<MandelbrotCPU2GPU>(gpu_state.palettes.0.handle()),
                 ftype: MandelbrotType::Standard as _,
             },
             gpu_state,
-        }
+        })
     }
 
     pub fn input_handler(&mut self, input_state: &InputState) {
@@ -776,9 +771,8 @@ impl Mandelbrot {
     }
 
     pub fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext) {
-        let params_std140 = self.params.as_std140();
         self.gpu_state
-            .render(vks, context, params_std140.as_bytes());
+            .render(vks, context, std::slice::from_ref(&self.params));
     }
 
     pub fn do_ui(&mut self, ui: &imgui::Ui) {
@@ -804,7 +798,11 @@ struct FractalGPUState {
 }
 
 impl FractalGPUState {
-    fn make_palettes(vks: &mut VulkanRenderer) -> (UniqueImage, UniqueSampler) {
+    fn make_palettes(
+        vks: &mut VulkanRenderer,
+        bindless_sys: &mut BindlessResourceSystem,
+    ) -> std::result::Result<(BindlessImageResourceHandleEntryPair, UniqueSampler), GraphicsError>
+    {
         use enterpolation::{linear::ConstEquidistantLinear, Curve};
         use palette::{rgb, LinSrgb, Srgb};
 
@@ -831,7 +829,7 @@ impl FractalGPUState {
             vks,
             &VulkanImageCreateInfo {
                 tag_name: Some("UI color palette"),
-                work_pkg: &qjob,
+                work_pkg: Some(&qjob),
                 ty: ImageType::TYPE_2D,
                 usage: ImageUsageFlags::SAMPLED,
                 memory: MemoryPropertyFlags::DEVICE_LOCAL,
@@ -845,14 +843,12 @@ impl FractalGPUState {
                     std::slice::from_raw_parts(colors.as_ptr() as *const u8, colors.len() * 4)
                 }],
             },
-        )
-        .expect("Failed to create color pallette");
-        let wait_token = vks.submit_queue_job(qjob).unwrap();
-        vks.consume_wait_token(wait_token);
+        )?;
 
+        let wait_token = vks.submit_queue_job(qjob)?;
         let sampler = UniqueSampler::new(
             vks,
-            *SamplerCreateInfo::builder()
+            SamplerCreateInfo::default()
                 .address_mode_u(SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_v(SamplerAddressMode::CLAMP_TO_EDGE)
                 .address_mode_w(SamplerAddressMode::CLAMP_TO_EDGE)
@@ -860,22 +856,25 @@ impl FractalGPUState {
                 .mag_filter(Filter::LINEAR)
                 .min_filter(Filter::LINEAR)
                 .mipmap_mode(SamplerMipmapMode::LINEAR),
-        );
+        )?;
 
-        (palette, sampler)
+        let color_palette = bindless_sys.register_image(palette, &sampler, None);
+        log::info!("color palette: {color_palette:?}");
+        vks.consume_wait_token(wait_token);
+        Ok((color_palette, sampler))
     }
 
     fn new<T: FractalCoreParams>(
         renderer: &mut VulkanRenderer,
         bindless: &mut BindlessResourceSystem,
-    ) -> Self {
+    ) -> std::result::Result<Self, GraphicsError> {
         let pipeline = GraphicsPipelineSetupHelper::new()
             .add_shader_stage(ShaderSource::File(T::VERTEX_SHADER_MODULE.into()))
             .add_shader_stage(ShaderSource::File(
                 T::BINDLESS_FRAGMENT_SHADER_MODULE.into(),
             ))
             .set_depth_stencil_state(
-                *PipelineDepthStencilStateCreateInfo::builder()
+                PipelineDepthStencilStateCreateInfo::default()
                     .depth_test_enable(false)
                     .depth_write_enable(false)
                     .stencil_test_enable(false)
@@ -883,7 +882,7 @@ impl FractalGPUState {
                     .max_depth_bounds(1f32),
             )
             .set_raster_state(
-                *PipelineRasterizationStateCreateInfo::builder()
+                PipelineRasterizationStateCreateInfo::default()
                     .cull_mode(CullModeFlags::NONE)
                     .front_face(FrontFace::COUNTER_CLOCKWISE)
                     .polygon_mode(PolygonMode::FILL)
@@ -898,8 +897,7 @@ impl FractalGPUState {
                 GraphicsPipelineCreateOptions {
                     layout: Some(bindless.pipeline_layout()),
                 },
-            )
-            .expect("Oyyy blyat, failed to create pipeline");
+            )?;
 
         let ubo_params = VulkanBuffer::create(
             renderer,
@@ -909,29 +907,32 @@ impl FractalGPUState {
                 usage: BufferUsageFlags::STORAGE_BUFFER,
                 memory_properties: MemoryPropertyFlags::DEVICE_LOCAL
                     | MemoryPropertyFlags::HOST_VISIBLE,
-                slabs: renderer.swapchain.max_frames as usize,
+                slabs: renderer.max_frames() as usize,
                 bytes: T::ssbo_size(),
                 initial_data: &[],
             },
-        )
-        .expect("Failed to create fractal parameters buffer");
+        )?;
 
         let ubo_handle = bindless.register_storage_buffer(ubo_params, None);
-        let (palette_image, sampler) = Self::make_palettes(renderer);
-        let palettes = bindless.register_image(palette_image, &sampler, None);
-        renderer.queue_ownership_transfer(&palettes);
+        let (palette_image, sampler) = Self::make_palettes(renderer, bindless)?;
+        renderer.queue_ownership_transfer(&palette_image);
 
         log::info!("fractal ubo {ubo_handle:?}");
 
-        Self {
+        Ok(Self {
             ubo_handle,
             pipeline,
-            palettes,
+            palettes: palette_image,
             sampler,
-        }
+        })
     }
 
-    fn render(&mut self, vks: &VulkanRenderer, context: &FrameRenderContext, gpu_data: &[u8]) {
+    fn render<T: Sized + Copy>(
+        &mut self,
+        vks: &VulkanRenderer,
+        context: &FrameRenderContext,
+        gpu_data: &[T],
+    ) {
         let render_area = Rect2D {
             offset: Offset2D { x: 0, y: 0 },
             extent: context.fb_size,
@@ -951,7 +952,7 @@ impl FractalGPUState {
         });
 
         unsafe {
-            vks.device_state.device.cmd_set_viewport_with_count(
+            vks.logical().cmd_set_viewport_with_count(
                 context.cmd_buff,
                 &[Viewport {
                     x: 0f32,
@@ -963,28 +964,29 @@ impl FractalGPUState {
                 }],
             );
 
-            vks.device_state
-                .device
+            vks.logical()
                 .cmd_set_scissor_with_count(context.cmd_buff, &[render_area]);
 
-            vks.device_state.device.cmd_bind_pipeline(
+            vks.logical().cmd_bind_pipeline(
                 context.cmd_buff,
                 PipelineBindPoint::GRAPHICS,
                 self.pipeline.handle(),
             );
 
-            vks.device_state.device.cmd_push_constants(
+            vks.logical().cmd_push_constants(
                 context.cmd_buff,
                 self.pipeline.layout(),
                 ShaderStageFlags::ALL,
                 0,
-                &GlobalPushConstant::from_resource(self.ubo_handle.0, context.current_frame_id)
-                    .to_gpu(),
+                &GlobalPushConstant::from_resource(
+                    self.ubo_handle.0,
+                    context.current_frame_id,
+                    None,
+                )
+                .to_gpu(),
             );
 
-            vks.device_state
-                .device
-                .cmd_draw(context.cmd_buff, 3, 1, 0, 0);
+            vks.logical().cmd_draw(context.cmd_buff, 3, 1, 0, 0);
         }
     }
 }

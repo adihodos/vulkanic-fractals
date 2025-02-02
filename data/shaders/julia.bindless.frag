@@ -291,7 +291,8 @@ JuliaResult julia_sine(in Complex z, in Complex c, in uint max_iterations) {
 }
 
 void main() {
-    const uvec2 global_data = unpack_global_pushconst();
+    const uvec3 global_data = unpack_global_pushconst();
+
     const uint frame_id = global_data.x;
     const uint buffer_idx = global_data.y;
     const JuliaFractalParams j_params = g_JuliaFractalParams[buffer_idx].p[0];

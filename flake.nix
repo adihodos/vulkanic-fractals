@@ -52,6 +52,7 @@
           cmake
           cmakeCurses
           gf
+          helix
 
           zlib
           vulkan-tools

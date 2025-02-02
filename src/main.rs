@@ -1,11 +1,9 @@
-// use ash::vk::{BufferUsageFlags, MemoryPropertyFlags};
-
+use fractal::{Julia, Mandelbrot};
+use ui::UiBackend;
 use vulkan_bindless::{BindlessResourceSystem, BindlessUniformBufferResourceHandleEntryPair};
 use vulkan_buffer::{VulkanBuffer, VulkanBufferCreateInfo};
 use vulkan_mapped_memory::UniqueBufferMapping;
 use vulkan_renderer::{FrameRenderContext, VulkanRenderer};
-// use fractal::{Julia, Mandelbrot};
-use ui::UiBackend;
 use winit::{
     dpi::PhysicalPosition,
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
@@ -13,7 +11,7 @@ use winit::{
     window::WindowBuilder,
 };
 
-// mod fractal;
+mod fractal;
 mod math;
 mod spin_mutex;
 mod ui;
@@ -99,8 +97,8 @@ enum FractalType {
 
 struct FractalSimulation {
     ftype: FractalType,
-    // julia: Julia,
-    // mandelbrot: Mandelbrot,
+    julia: Julia,
+    mandelbrot: Mandelbrot,
     ui_opened: bool,
     #[cfg(feature = "enable_ui")]
     ui: UiBackend,
@@ -160,20 +158,15 @@ impl FractalSimulation {
             VulkanRenderer::create(get_window_data(window))
                 .expect("Failed to initialize vulkan ..."),
         );
-        //
-        // log::info!("### Device limits:\n{:?}", vks.limits());
-        // log::info!("### Device features:\n{:?}", vks.features());
-        //
-        // let (max_frames,) = vks.setup();
-        //
+
         let mut bindless_sys = BindlessResourceSystem::new(&vks).expect("Cant create bindless sys");
 
         #[cfg(feature = "enable_ui")]
         let ui = UiBackend::new(window, &mut vks, &mut bindless_sys, ui::HiDpiMode::Default)
             .expect("Failed to create UI backend");
-        //
-        // let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys);
-        // let julia = Julia::new(&mut vks, &mut bindless_sys);
+
+        let julia = Julia::create(&mut vks, &mut bindless_sys).expect("yy");
+        let mandelbrot = Mandelbrot::new(&mut vks, &mut bindless_sys).expect("xx");
 
         let max_frames = vks.max_frames() as usize;
         let ubo_globals = VulkanBuffer::create(
@@ -191,11 +184,12 @@ impl FractalSimulation {
         .expect("Failed to create ubo_globals");
 
         let ubo_globals_handle = bindless_sys.register_uniform_buffer(ubo_globals, None);
+
         //
         FractalSimulation {
             ftype: FractalType::Mandelbrot,
-            // julia,
-            // mandelbrot,
+            julia,
+            mandelbrot,
             ui_opened: true,
             control_down: false,
             cursor_pos,
@@ -271,10 +265,10 @@ impl FractalSimulation {
                 ui.text_colored([0.0f32, 1.0f32, 0.0f32, 1.0f32], "::: Parameters :::");
                 ui.separator();
 
-                // match self.ftype {
-                // FractalType::Julia => self.julia.do_ui(ui),
-                // FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
-                // }
+                match self.ftype {
+                    FractalType::Julia => self.julia.do_ui(ui),
+                    FractalType::Mandelbrot => self.mandelbrot.do_ui(ui),
+                }
             });
     }
 
@@ -317,41 +311,39 @@ impl FractalSimulation {
             }
 
             WindowEvent::Resized(_) => {
-                //
                 // forward this event to both fractal objects
-                // self.julia.input_handler(&InputState {
-                //     window,
-                //     event,
-                //     cursor_pos: self.cursor_pos,
-                //     control_down: self.control_down,
-                // });
-                // self.mandelbrot.input_handler(&InputState {
-                //     window,
-                //     event,
-                //     cursor_pos: self.cursor_pos,
-                //     control_down: self.control_down,
-                // });
+                self.julia.input_handler(&InputState {
+                    window,
+                    event,
+                    cursor_pos: self.cursor_pos,
+                    control_down: self.control_down,
+                });
+                self.mandelbrot.input_handler(&InputState {
+                    window,
+                    event,
+                    cursor_pos: self.cursor_pos,
+                    control_down: self.control_down,
+                });
             }
 
-            // _ => match self.ftype {
-            //     FractalType::Julia => {
-            //         self.julia.input_handler(&InputState {
-            //             window,
-            //             event,
-            //             cursor_pos: self.cursor_pos,
-            //             control_down: self.control_down,
-            //         });
-            //     }
-            //     FractalType::Mandelbrot => {
-            //         self.mandelbrot.input_handler(&InputState {
-            //             window,
-            //             event,
-            //             cursor_pos: self.cursor_pos,
-            //             control_down: self.control_down,
-            //         });
-            //     }
-            // },
-            _ => {}
+            _ => match self.ftype {
+                FractalType::Julia => {
+                    self.julia.input_handler(&InputState {
+                        window,
+                        event,
+                        cursor_pos: self.cursor_pos,
+                        control_down: self.control_down,
+                    });
+                }
+                FractalType::Mandelbrot => {
+                    self.mandelbrot.input_handler(&InputState {
+                        window,
+                        event,
+                        cursor_pos: self.cursor_pos,
+                        control_down: self.control_down,
+                    });
+                }
+            },
         }
     }
 
@@ -371,23 +363,23 @@ impl FractalSimulation {
                 #[cfg(feature = "enable_ui")]
                 {
                     let wants_input = self.ui.handle_event(window, &event);
-                    if !wants_input {}
+                    if !wants_input {
+                        self.handle_window_event(window, win_event, control_flow);
+                    }
                 }
-                self.handle_window_event(window, win_event, control_flow);
             }
 
             Event::MainEventsCleared => {
                 let frame_context = self.begin_rendering(window);
-                //
-                // match self.ftype {
-                //     FractalType::Julia => {
-                //         self.julia.render(&self.vks, &frame_context);
-                //     }
-                //     FractalType::Mandelbrot => {
-                //         self.mandelbrot.render(&self.vks, &frame_context);
-                //     }
-                // }
-                //
+
+                match self.ftype {
+                    FractalType::Julia => {
+                        self.julia.render(&self.vks, &frame_context);
+                    }
+                    FractalType::Mandelbrot => {
+                        self.mandelbrot.render(&self.vks, &frame_context);
+                    }
+                }
 
                 #[cfg(feature = "enable_ui")]
                 {

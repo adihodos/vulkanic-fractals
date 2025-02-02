@@ -6,9 +6,9 @@ use ash::vk::{
     MemoryPropertyFlags, Offset2D, PipelineBindPoint, PipelineColorBlendAttachmentState,
     PipelineColorBlendStateCreateInfo, PipelineDepthStencilStateCreateInfo, PipelineLayout,
     PipelineRasterizationStateCreateInfo, PolygonMode, Rect2D, SamplerAddressMode,
-    SamplerCreateInfo, SamplerMipmapMode, ShaderStageFlags, Viewport,
+    SamplerMipmapMode, ShaderStageFlags, Viewport,
 };
-use imgui::{self, BackendFlags, DrawIdx, DrawVert, FontConfig, FontId, Io, Key};
+use imgui::{self, BackendFlags, FontConfig, FontId, Io, Key};
 use imgui::{DrawCmd, FontSource};
 
 use winit::{
@@ -43,7 +43,7 @@ type UiIndex = imgui::DrawIdx;
 pub struct WinitPlatform {
     hidpi_mode: ActiveHiDpiMode,
     hidpi_factor: f64,
-    cursor_cache: Option<CursorSettings>,
+    _cursor_cache: Option<CursorSettings>,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -336,7 +336,7 @@ impl UiBackend {
         let platform = WinitPlatform {
             hidpi_mode,
             hidpi_factor,
-            cursor_cache: None,
+            _cursor_cache: None,
         };
 
         imgui.io_mut().display_framebuffer_scale = [hidpi_factor as f32, hidpi_factor as f32];
@@ -522,8 +522,6 @@ impl UiBackend {
             )?;
 
         vks.consume_wait_token(wait_token);
-        // TODO: fix this
-        // imgui.fonts().tex_id = imgui::TextureId::new(descriptor_sets[0].as_raw() as usize);
 
         Ok(UiBackend {
             imgui,
@@ -884,8 +882,13 @@ impl UiBackend {
                 self.rs.bindless_layout,
                 ShaderStageFlags::ALL,
                 0,
-                &UIPushConstant::create(self.rs.ubo_handle.0, frame_context.current_frame_id)
-                    .to_gpu(),
+                &GlobalPushConstant::from_resource(
+                    self.rs.ubo_handle.0,
+                    frame_context.current_frame_id,
+                    None,
+                )
+                .to_gpu(), // &UIPushConstant::create(self.rs.ubo_handle.0, frame_context.current_frame_id)
+                           //     .to_gpu(),
             );
 
             //
@@ -981,18 +984,17 @@ fn init_imgui() -> imgui::Context {
     imgui
 }
 
-///
-#[derive(Copy, Clone, Debug)]
-struct UIPushConstant(u32);
-
-impl UIPushConstant {
-    fn create<T>(bindless_res: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
-        assert!(frame_id < 16);
-        let resource_handle = bindless_res.element_handle(frame_id as usize).handle();
-        Self((resource_handle << 4) | frame_id)
-    }
-
-    fn to_gpu(self) -> [u8; 4] {
-        self.0.to_le_bytes()
-    }
-}
+// #[derive(Copy, Clone, Debug)]
+// struct UIPushConstant(u32);
+//
+// impl UIPushConstant {
+//     fn create<T>(bindless_res: BindlessResourceHandleCore<T>, frame_id: u32) -> Self {
+//         assert!(frame_id < 16);
+//         let resource_handle = bindless_res.element_handle(frame_id as usize).handle();
+//         Self((resource_handle << 4) | frame_id)
+//     }
+//
+//     fn to_gpu(self) -> [u8; 4] {
+//         self.0.to_le_bytes()
+//     }
+// }

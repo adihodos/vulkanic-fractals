@@ -236,12 +236,12 @@ MandelbrotResult mandelbrot_burning_ship(in Complex z, in Complex c, in uint max
 }
 
 void main() {
-    const uvec2 global_data = unpack_global_pushconst();
+    const uvec3 global_data = unpack_global_pushconst();
     const uint frame_id = global_data.x;
     const uint buffer_idx = global_data.y;
 
-  const MandelbrotFractalParams mandel_params = g_MandelbrotFractalParams[buffer_idx].p[0];
-  const FractalCommonCore params = mandel_params.cc;
+    const MandelbrotFractalParams mandel_params = g_MandelbrotFractalParams[buffer_idx].p[0];
+    const FractalCommonCore params = mandel_params.cc;
 
   const Complex c = screen_coords_to_complex_coords(
     gl_FragCoord.x, 
