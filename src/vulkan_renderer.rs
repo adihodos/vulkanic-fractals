@@ -537,6 +537,17 @@ impl std::ops::Drop for VulkanRenderer {
 }
 
 impl VulkanRenderer {
+    fn compute_swapchain_image_count(surface_caps: &ash::vk::SurfaceCapabilitiesKHR) -> u32 {
+        let swapchain_image_count = ((surface_caps.min_image_count as f32) * 1.5f32) as u32;
+        if surface_caps.max_image_count == 0 {
+            //
+            // no upper limit on the number of images
+            swapchain_image_count
+        } else {
+            swapchain_image_count.min(surface_caps.max_image_count)
+        }
+    }
+
     pub fn create(
         wsi: WindowSystemIntegration,
     ) -> std::result::Result<VulkanRenderer, GraphicsError> {
@@ -572,9 +583,8 @@ impl VulkanRenderer {
             ],
         )?;
 
-        let swapchain_image_count = (((extra_data.surface_caps.min_image_count as f32) * 1.5f32)
-            as u32)
-            .min(extra_data.surface_caps.max_image_count);
+        let swapchain_image_count = Self::compute_swapchain_image_count(&extra_data.surface_caps);
+
         let swapchain_ext =
             ash::khr::swapchain::Device::new(&instance.handle, &device_state.logical);
 
@@ -1353,6 +1363,23 @@ fn pick_device(
     unsafe { instance.enumerate_physical_devices() }?
         .into_iter()
         .filter_map(|phys_device| -> Option< (PhysicalDeviceState, PickedDeviceExtraData)  > {
+            let device_properties = unsafe {instance.get_physical_device_properties(phys_device) };
+            let (api_ver_major, api_ver_minor, api_ver_patch) = (
+                ash::vk::api_version_major(device_properties.api_version),
+                ash::vk::api_version_minor(device_properties.api_version),
+                    ash::vk::api_version_patch(device_properties.api_version),
+                );
+
+            //
+            // target at least Vulkan 1.3
+            if (api_ver_minor < 3) {
+                log::info!("Rejecting device {}, msupported Vulkan API is {}.{}.{}",
+                    device_properties.device_id, api_ver_major, api_ver_minor, api_ver_patch);
+                return None;
+            }
+
+            log::info!("Vulkan API version: {}.{}.{}", api_ver_major, api_ver_minor, api_ver_patch);
+
             let (physical_device_properties, props_vk11, props_vk12, props_vk13, descriptor_indexing) = unsafe {
                 let mut props_vk11 = ash::vk::PhysicalDeviceVulkan11Properties::default();
                 let mut props_vk12 = ash::vk::PhysicalDeviceVulkan12Properties::default();
